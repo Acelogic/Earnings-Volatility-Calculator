@@ -1,13 +1,20 @@
 """
-DISCLAIMER: 
+Earnings Volatility Calculator (Tkinter-based)
+---------------------------------------------
+Features:
+  - Proxy toggling & fetching
+  - Single-stock "Analyze"
+  - "Scan Earnings" for chosen date (uses a calendar widget from tkcalendar)
+  - Table with clickable column headings for sorting
+  - Row coloring based on recommendation (Recommended=green, Consider=orange, Avoid=red)
+  - Two filters: (1) Earnings Time, (2) Recommendation
+  - Double-click table row to see candlestick chart
+  - Export table data to CSV
 
-This software is provided solely for educational and research purposes. 
-It is not intended to provide investment advice, and no investment recommendations are made herein. 
-The developers are not financial advisors and accept no responsibility for any financial decisions or losses resulting from the use of this software. 
-Always consult a professional financial advisor before making any investment decisions.
+Dependencies:
+  pip install requests yfinance pandas numpy beautifulsoup4 matplotlib tkcalendar
 """
 
-# Standard library imports
 import os
 import random
 import logging
@@ -20,27 +27,33 @@ import concurrent.futures
 from queue import Queue
 from datetime import datetime, timedelta
 
-# Third-party imports
 import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from bs4 import BeautifulSoup
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+# Tkinter + tkcalendar imports
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+try:
+    from tkcalendar import DateEntry
+except ImportError:
+    messagebox.showerror("Missing Library",
+                         "Please install tkcalendar:\n\n  pip install tkcalendar\n\nThen re-run.")
+    raise SystemExit
+
+import matplotlib
+matplotlib.use("TkAgg")  # So that Matplotlib works inside Tk
 import matplotlib.pyplot as plt
-from io import BytesIO
-import mplfinance as mpf  # For candlestick charts
-import FreeSimpleGUI as sg
+import mplfinance as mpf
 
-# Check NumPy version for compatibility
-NUMPY_VERSION = tuple(map(int, np.__version__.split('.')[:2]))
-IS_NUMPY_2 = NUMPY_VERSION[0] >= 2
 
-# ------------------- Proxy Manager -------------------
+# ====================== ProxyManager ======================
 class ProxyManager:
     """Manages proxy connections and rotation from multiple free sources."""
-    
     def __init__(self):
         self.proxies: List[Dict[str, str]] = []
         self.current_proxy: Optional[Dict[str, str]] = None
@@ -58,117 +71,89 @@ class ProxyManager:
             self.logger.addHandler(fh)
     
     def fetch_proxyscrape(self) -> List[Dict[str, str]]:
-        """Fetch proxies from Proxyscrape."""
         try:
             url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
-            response = requests.get(url)
-            if response.status_code == 200:
-                proxy_list = [x.strip() for x in response.text.split('\n') if x.strip()]
-                return [
-                    {
-                        'http': f"http://{proxy}",
-                        'https': f"http://{proxy}"
-                    }
-                    for proxy in proxy_list
-                ]
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                lines = [x.strip() for x in resp.text.split('\n') if x.strip()]
+                return [{'http': f"http://{line}", 'https': f"http://{line}"} for line in lines]
             return []
         except Exception as e:
-            self.logger.error(f"Error fetching from Proxyscrape: {e}")
+            self.logger.error(f"Error from Proxyscrape: {e}")
             return []
-
+    
     def fetch_geonode(self) -> List[Dict[str, str]]:
-        """Fetch proxies from Geonode's free API."""
         try:
-            url = "https://proxylist.geonode.com/api/proxy-list?limit=100&page=1&sort_by=lastChecked&sort_type=desc&protocols=http&anonymityLevel=elite&anonymityLevel=anonymous"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                return [
-                    {
-                        'http': f"http://{proxy['ip']}:{proxy['port']}",
-                        'https': f"http://{proxy['ip']}:{proxy['port']}"
-                    }
-                    for proxy in data.get('data', [])
-                ]
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching from Geonode: {e}")
-            return []
-
-    def fetch_pubproxy(self) -> List[Dict[str, str]]:
-        """Fetch proxies from PubProxy."""
-        try:
-            url = "http://pubproxy.com/api/proxy?limit=20&format=json&type=http"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                return [
-                    {
-                        'http': f"http://{proxy['ip']}:{proxy['port']}",
-                        'https': f"http://{proxy['ip']}:{proxy['port']}"
-                    }
-                    for proxy in data.get('data', [])
-                ]
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching from PubProxy: {e}")
-            return []
-
-    def fetch_proxylist_download(self) -> List[Dict[str, str]]:
-        """Fetch proxies from ProxyList.download."""
-        try:
-            url = "https://www.proxy-list.download/api/v1/get?type=http"
-            response = requests.get(url)
-            if response.status_code == 200:
-                proxy_list = [x.strip() for x in response.text.split('\n') if x.strip()]
-                return [
-                    {
-                        'http': f"http://{proxy}",
-                        'https': f"http://{proxy}"
-                    }
-                    for proxy in proxy_list
-                ]
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching from ProxyList.download: {e}")
-            return []
-
-    def fetch_spys_one(self) -> List[Dict[str, str]]:
-        """Fetch proxies from Spys.one."""
-        try:
-            url = "https://spys.one/free-proxy-list/ALL/"
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                proxy_rows = soup.find_all('tr', class_=['spy1x', 'spy1xx'])
+            url = ("https://proxylist.geonode.com/api/proxy-list?limit=100&page=1"
+                   "&sort_by=lastChecked&sort_type=desc&protocols=http"
+                   "&anonymityLevel=elite&anonymityLevel=anonymous")
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
                 proxies = []
-                for row in proxy_rows:
-                    cols = row.find_all('td')
-                    if len(cols) >= 2:
-                        ip = cols[0].text.strip()
-                        port = cols[1].text.strip()
-                        proxies.append({
-                            'http': f"http://{ip}:{port}",
-                            'https': f"http://{ip}:{port}"
-                        })
+                for p in data.get('data', []):
+                    ip = p['ip']
+                    port = p['port']
+                    proxies.append({'http': f"http://{ip}:{port}", 'https': f"http://{ip}:{port}"})
                 return proxies
             return []
         except Exception as e:
-            self.logger.error(f"Error fetching from Spys.one: {e}")
+            self.logger.error(f"Error from Geonode: {e}")
             return []
-
-    def verify_proxy(self, proxy: Dict[str, str]) -> bool:
-        """Test if a proxy is working."""
+    
+    def fetch_pubproxy(self) -> List[Dict[str, str]]:
         try:
-            test_url = "https://www.google.com"
-            response = requests.get(test_url, proxies=proxy, timeout=5)
-            return response.status_code == 200
-        except:
-            return False
-
+            url = "http://pubproxy.com/api/proxy?limit=20&format=json&type=http"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                proxies = []
+                for p in data.get('data', []):
+                    ip = p['ip']
+                    port = p['port']
+                    proxies.append({'http': f"http://{ip}:{port}", 'https': f"http://{ip}:{port}"})
+                return proxies
+            return []
+        except Exception as e:
+            self.logger.error(f"Error from PubProxy: {e}")
+            return []
+    
+    def fetch_proxylist_download(self) -> List[Dict[str, str]]:
+        try:
+            url = "https://www.proxy-list.download/api/v1/get?type=http"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                lines = [x.strip() for x in resp.text.split('\n') if x.strip()]
+                return [{'http': f"http://{line}", 'https': f"http://{line}"} for line in lines]
+            return []
+        except Exception as e:
+            self.logger.error(f"Error from ProxyList.download: {e}")
+            return []
+    
+    def fetch_spys_one(self) -> List[Dict[str, str]]:
+        try:
+            url = "https://spys.one/free-proxy-list/ALL/"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                rows = soup.find_all('tr', class_=['spy1x', 'spy1xx'])
+                proxies = []
+                for r in rows:
+                    cols = r.find_all('td')
+                    if len(cols)>=2:
+                        ip = cols[0].text.strip()
+                        port = cols[1].text.strip()
+                        proxies.append({'http': f"http://{ip}:{port}", 'https': f"http://{ip}:{port}"})
+                return proxies
+            return []
+        except Exception as e:
+            self.logger.error(f"Error from Spys.one: {e}")
+            return []
+    
     def fetch_proxies(self) -> None:
-        """Fetch proxies from all sources and verify them."""
+        """Concurrent fetch from multiple sources, then remove duplicates."""
+        import concurrent.futures
         all_proxies = []
         sources = [
             self.fetch_proxyscrape,
@@ -177,686 +162,543 @@ class ProxyManager:
             self.fetch_proxylist_download,
             self.fetch_spys_one
         ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as exe:
+            future_to_src = {exe.submit(fn): fn.__name__ for fn in sources}
+            for fut in concurrent.futures.as_completed(future_to_src):
+                name = future_to_src[fut]
+                try:
+                    result = fut.result()
+                    all_proxies.extend(result)
+                    self.logger.info(f"Fetched {len(result)} from {name}")
+                except Exception as e:
+                    self.logger.error(f"Error from {name}: {str(e)}")
         
-        for source in sources:
-            proxies = source()
-            all_proxies.extend(proxies)
-            self.logger.info(f"Fetched {len(proxies)} proxies from {source.__name__}")
-        
-        # Remove duplicates
         seen = set()
-        unique_proxies = []
-        for proxy in all_proxies:
-            proxy_str = f"{proxy['http']}"
-            if proxy_str not in seen:
-                seen.add(proxy_str)
-                unique_proxies.append(proxy)
-        
-        # Verify proxies (optional - can be slow)
-        # working_proxies = [p for p in unique_proxies if self.verify_proxy(p)]
-        # self.proxies = working_proxies
-        
-        self.proxies = unique_proxies
+        unique = []
+        for p in all_proxies:
+            s = p['http']
+            if s not in seen:
+                seen.add(s)
+                unique.append(p)
+        self.proxies = unique
         self.logger.info(f"Total unique proxies: {len(self.proxies)}")
-        
+    
     def get_proxy(self) -> Optional[Dict[str, str]]:
-        """Get a random proxy from the pool."""
         if not self.proxy_enabled or not self.proxies:
             return None
         self.current_proxy = random.choice(self.proxies)
         return self.current_proxy
     
     def rotate_proxy(self) -> Optional[Dict[str, str]]:
-        """Rotate to a new proxy, avoiding the current one."""
-        if not self.proxy_enabled or len(self.proxies) <= 1:
+        if not self.proxy_enabled or len(self.proxies)<=1:
             return None
-        available_proxies = [p for p in self.proxies if p != self.current_proxy]
-        if available_proxies:
-            self.current_proxy = random.choice(available_proxies)
-            return self.current_proxy
-        return None
-    """Manages proxy connections and rotation for YFinance requests."""
-    
-    def __init__(self):
-        self.proxies: List[Dict[str, str]] = []
-        self.current_proxy: Optional[Dict[str, str]] = None
-        self.proxy_enabled: bool = False
-        self._initialize_logging()
-    
-    def _initialize_logging(self):
-        self.logger = logging.getLogger('ProxyManager')
-        self.logger.setLevel(logging.DEBUG)
-        if not self.logger.handlers:
-            fh = logging.FileHandler('proxy_manager_debug.log')
-            fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
-            self.logger.addHandler(fh)
-    
-    def fetch_proxies(self) -> None:
-        """Fetch fresh proxies from Proxyscrape's free proxy service."""
-        try:
-            url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
-            response = requests.get(url)
-            if response.status_code == 200:
-                proxy_list = [x.strip() for x in response.text.split('\n') if x.strip()]
-                self.proxies = [
-                    {
-                        'http': f"http://{proxy}",
-                        'https': f"http://{proxy}"
-                    }
-                    for proxy in proxy_list
-                ]
-                self.logger.info(f"Successfully fetched {len(self.proxies)} proxies")
-            else:
-                raise Exception(f"Failed to fetch proxies: {response.status_code}")
-        except Exception as e:
-            self.logger.error(f"Error fetching proxies: {e}")
-            raise
-    
-    def get_proxy(self) -> Optional[Dict[str, str]]:
-        """Get a random proxy from the pool."""
-        if not self.proxy_enabled or not self.proxies:
-            return None
-        self.current_proxy = random.choice(self.proxies)
-        return self.current_proxy
-    
-    def rotate_proxy(self) -> Optional[Dict[str, str]]:
-        """Rotate to a new proxy, avoiding the current one."""
-        if not self.proxy_enabled or len(self.proxies) <= 1:
-            return None
-        available_proxies = [p for p in self.proxies if p != self.current_proxy]
-        if available_proxies:
-            self.current_proxy = random.choice(available_proxies)
+        av = [p for p in self.proxies if p!=self.current_proxy]
+        if av:
+            self.current_proxy = random.choice(av)
             return self.current_proxy
         return None
 
-# ------------------- Session Manager -------------------
+
+# ====================== SessionManager ======================
 class SessionManager:
-    """Manages YFinance sessions with proxy support."""
-    
     def __init__(self, proxy_manager: ProxyManager):
         self.proxy_manager = proxy_manager
         self.session = self._create_session()
     
     def _create_session(self) -> requests.Session:
-        """Create a new session with current proxy settings."""
-        session = requests.Session()
+        s = requests.Session()
         if self.proxy_manager.proxy_enabled:
-            proxy = self.proxy_manager.get_proxy()
-            if proxy:
-                session.proxies.update(proxy)
-        return session
+            p = self.proxy_manager.get_proxy()
+            if p: s.proxies.update(p)
+        return s
     
-    def rotate_session(self) -> None:
-        """Rotate to a new session with a different proxy."""
+    def rotate_session(self):
         if self.proxy_manager.proxy_enabled:
-            proxy = self.proxy_manager.rotate_proxy()
-            if proxy:
+            p = self.proxy_manager.rotate_proxy()
+            if p:
                 self.session = self._create_session()
     
     def get_session(self) -> requests.Session:
-        """Get the current session."""
         return self.session
 
-# ------------------- Options Analyzer -------------------
+
+# ====================== OptionsAnalyzer ======================
+NUMPY_VERSION = tuple(map(int, np.__version__.split('.')[:2]))
+IS_NUMPY_2 = NUMPY_VERSION[0] >= 2
+
 class OptionsAnalyzer:
-    """Options analysis tool with version compatibility and proxy support."""
-    
-    def __init__(self, proxy_manager: Optional[ProxyManager] = None):
+    def __init__(self, proxy_manager=None):
         self.warnings_shown = False
         self.proxy_manager = proxy_manager or ProxyManager()
         self.session_manager = SessionManager(self.proxy_manager)
-        self._initialize_logging()
+        self._init_log()
     
-    def _initialize_logging(self):
+    def _init_log(self):
         self.logger = logging.getLogger('OptionsAnalyzer')
         self.logger.setLevel(logging.DEBUG)
         if not self.logger.handlers:
             fh = logging.FileHandler('options_analyzer_debug.log')
             fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
+            form = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(form)
             self.logger.addHandler(fh)
     
+    def safe_log(self, val: np.ndarray) -> np.ndarray:
+        if IS_NUMPY_2:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return np.log(val)
+        return np.log(val)
+    
+    def safe_sqrt(self, val: np.ndarray) -> np.ndarray:
+        if IS_NUMPY_2:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return np.sqrt(val)
+        return np.sqrt(val)
+    
     def get_ticker(self, symbol: str) -> yf.Ticker:
-        """Get a ticker instance with the current session."""
-        ticker = yf.Ticker(symbol)
-        ticker.session = self.session_manager.get_session()
-        return ticker
-    
-    def safe_log(self, values: np.ndarray) -> np.ndarray:
-        """Safe logarithm calculation compatible with both NumPy versions."""
-        if IS_NUMPY_2:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                return np.log(values)
-        return np.log(values)
-    
-    def safe_sqrt(self, values: np.ndarray) -> np.ndarray:
-        """Safe square root calculation compatible with both NumPy versions."""
-        if IS_NUMPY_2:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                return np.sqrt(values)
-        return np.sqrt(values)
+        t = yf.Ticker(symbol)
+        t.session = self.session_manager.get_session()
+        return t
     
     def filter_dates(self, dates: List[str]) -> List[str]:
-        """Filter option expiration dates – keep only those 45+ days in the future."""
         today = datetime.today().date()
-        cutoff_date = today + timedelta(days=45)
-        sorted_dates = sorted(datetime.strptime(date, "%Y-%m-%d").date() for date in dates)
+        cutoff = today + timedelta(days=45)
+        sdates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
         arr = []
-        for i, date in enumerate(sorted_dates):
-            if date >= cutoff_date:
-                arr = [d.strftime("%Y-%m-%d") for d in sorted_dates[:i+1]]
+        for i,d in enumerate(sdates):
+            if d>=cutoff:
+                arr = [x.strftime("%Y-%m-%d") for x in sdates[:i+1]]
                 break
         if arr:
-            if arr[0] == today.strftime("%Y-%m-%d"):
+            if arr[0]==today.strftime("%Y-%m-%d"):
                 return arr[1:]
             return arr
-        raise ValueError("No date 45 days or more in the future found.")
+        raise ValueError("No date 45+ days out found.")
     
-    def yang_zhang_volatility(self, price_data: pd.DataFrame, window: int = 30, trading_periods: int = 252, return_last_only: bool = True) -> float:
-        """Calculate Yang-Zhang volatility; falls back to simple volatility on error."""
+    def yang_zhang_volatility(self, pdf: pd.DataFrame, window=30, trading_periods=252, return_last_only=True):
         try:
-            log_ho = self.safe_log(price_data['High'] / price_data['Open'])
-            log_lo = self.safe_log(price_data['Low'] / price_data['Open'])
-            log_co = self.safe_log(price_data['Close'] / price_data['Open'])
-            log_oc = self.safe_log(price_data['Open'] / price_data['Close'].shift(1))
-            log_oc_sq = log_oc ** 2
-            log_cc = self.safe_log(price_data['Close'] / price_data['Close'].shift(1))
-            log_cc_sq = log_cc ** 2
-            rs = log_ho * (log_ho - log_co) + log_lo * (log_lo - log_co)
-            close_vol = log_cc_sq.rolling(window=window).sum() * (1.0 / (window - 1.0))
-            open_vol = log_oc_sq.rolling(window=window).sum() * (1.0 / (window - 1.0))
-            window_rs = rs.rolling(window=window).sum() * (1.0 / (window - 1.0))
-            k = 0.34 / (1.34 + (window + 1) / (window - 1))
-            result = self.safe_sqrt(open_vol + k * close_vol + (1 - k) * window_rs) * self.safe_sqrt(trading_periods)
+            log_ho = self.safe_log(pdf['High']/pdf['Open'])
+            log_lo = self.safe_log(pdf['Low']/pdf['Open'])
+            log_co = self.safe_log(pdf['Close']/pdf['Open'])
+            log_oc = self.safe_log(pdf['Open']/pdf['Close'].shift(1))
+            log_oc_sq = log_oc**2
+            log_cc = self.safe_log(pdf['Close']/pdf['Close'].shift(1))
+            log_cc_sq = log_cc**2
+            rs = log_ho*(log_ho-log_co) + log_lo*(log_lo-log_co)
+            close_vol = log_cc_sq.rolling(window=window).sum()/(window-1.0)
+            open_vol = log_oc_sq.rolling(window=window).sum()/(window-1.0)
+            rs_ = rs.rolling(window=window).sum()/(window-1.0)
+            k = 0.34/(1.34 + (window+1)/(window-1))
+            out = self.safe_sqrt(open_vol + k*close_vol + (1-k)*rs_) * self.safe_sqrt(trading_periods)
             if return_last_only:
-                return result.iloc[-1]
-            return result.dropna()
+                return out.iloc[-1]
+            return out.dropna()
         except Exception as e:
             if not self.warnings_shown:
-                warnings.warn(f"Error in volatility calculation: {str(e)}. Using alternative method.")
-                self.warnings_shown = True
-            return self.calculate_simple_volatility(price_data, window, trading_periods, return_last_only)
+                warnings.warn(f"Error in Yang-Zhang: {e}")
+                self.warnings_shown=True
+            return self.calculate_simple_volatility(pdf,window,trading_periods,return_last_only)
     
-    def calculate_simple_volatility(self, price_data: pd.DataFrame, window: int = 30, trading_periods: int = 252, return_last_only: bool = True) -> float:
-        """Calculate simple volatility as fallback."""
+    def calculate_simple_volatility(self, pdf: pd.DataFrame, window=30, trading_periods=252, return_last_only=True):
         try:
-            returns = price_data['Close'].pct_change().dropna()
-            vol = returns.rolling(window=window).std() * np.sqrt(trading_periods)
+            rets = pdf['Close'].pct_change().dropna()
+            vol = rets.rolling(window=window).std()*np.sqrt(trading_periods)
             if return_last_only:
                 return vol.iloc[-1]
             return vol
         except Exception as e:
-            warnings.warn(f"Error in simple volatility calculation: {str(e)}")
+            warnings.warn(f"Error in fallback volatility: {e}")
             return np.nan
     
     def build_term_structure(self, days: List[int], ivs: List[float]) -> callable:
-        """Build IV term structure using linear interpolation."""
         try:
-            days_arr = np.array(days)
-            ivs_arr = np.array(ivs)
-            sort_idx = days_arr.argsort()
-            days_arr = days_arr[sort_idx]
-            ivs_arr = ivs_arr[sort_idx]
             from scipy.interpolate import interp1d
-            spline = interp1d(days_arr, ivs_arr, kind='linear', fill_value="extrapolate")
-            def term_spline(dte: float) -> float:
-                if dte < days_arr[0]:
-                    return float(ivs_arr[0])
-                elif dte > days_arr[-1]:
-                    return float(ivs_arr[-1])
+            da = np.array(days)
+            va = np.array(ivs)
+            idx = da.argsort()
+            da, va = da[idx], va[idx]
+            f = interp1d(da, va, kind='linear', fill_value="extrapolate")
+            def tspline(dte):
+                if dte<da[0]:
+                    return float(va[0])
+                elif dte>da[-1]:
+                    return float(va[-1])
                 else:
-                    return float(spline(dte))
-            return term_spline
+                    return float(f(dte))
+            return tspline
         except Exception as e:
-            warnings.warn(f"Error in term structure calculation: {str(e)}")
+            warnings.warn(f"Error building term structure: {e}")
             return lambda x: np.nan
     
-    def get_current_price(self, ticker: yf.Ticker) -> float:
-        """Return the current stock price."""
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
+    def get_current_price(self, ticker: yf.Ticker):
+        for attempt in range(3):
             try:
-                todays_data = ticker.history(period='1d')
-                if todays_data.empty:
-                    raise ValueError("No price data available")
-                return todays_data['Close'].iloc[-1]
+                td = ticker.history(period='1d')
+                if td.empty: raise ValueError("No price data for 1d.")
+                return td['Close'].iloc[-1]
             except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    self.logger.warning(f"Failed to get price, attempt {retry_count}. Rotating proxy...")
+                if attempt<2:
+                    self.logger.warning(f"Failed to get price: {e}. Rotating proxy.")
                     self.session_manager.rotate_session()
                     ticker.session = self.session_manager.get_session()
                 else:
-                    raise ValueError(f"Failed to get price after {max_retries} attempts: {str(e)}")
+                    raise ValueError(f"Cannot get price: {e}")
     
-    def compute_recommendation(self, ticker: str) -> Dict:
+    def compute_recommendation(self, symbol: str)->Dict:
         """
-        Compute the trading recommendation with proxy support and automatic retry.
-        
-        Criteria:
-          - Average volume must be at least 1,500,000 shares.
-          - IV30/RV30 ratio must be at least 1.25.
-          - Term structure slope (0 to 45 days) must be less than or equal to -0.00406.
+        Conditions:
+         - 30-day avg volume >=1,500,000
+         - IV30/RV30 >=1.25
+         - Term slope <= -0.00406
         """
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
+        for attempt in range(3):
             try:
-                ticker = ticker.strip().upper()
-                if not ticker:
-                    return {"error": "No stock symbol provided."}
-                
-                stock = self.get_ticker(ticker)
-                if len(stock.options) == 0:
-                    return {"error": f"No options found for stock symbol '{ticker}'."}
-                
-                exp_dates = list(stock.options)
-                exp_dates = self.filter_dates(exp_dates)
-                options_chains = {}
-                for exp_date in exp_dates:
+                s = symbol.strip().upper()
+                if not s:
+                    return {"error":"No symbol provided."}
+                t = self.get_ticker(s)
+                if len(t.options)==0:
+                    return {"error":f"No options for {s}."}
+                exps = list(t.options)
+                exps = self.filter_dates(exps)
+                oc = {}
+                for e in exps:
                     try:
-                        options_chains[exp_date] = stock.option_chain(exp_date)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to fetch option chain for {exp_date}: {str(e)}")
+                        oc[e] = t.option_chain(e)
+                    except:
+                        self.logger.warning(f"Couldn't get chain {e}. Rotating.")
                         self.session_manager.rotate_session()
-                        stock.session = self.session_manager.get_session()
-                        options_chains[exp_date] = stock.option_chain(exp_date)
+                        t.session = self.session_manager.get_session()
+                        oc[e] = t.option_chain(e)
                 
-                underlying_price = self.get_current_price(stock)
+                up = self.get_current_price(t)
+                hist1 = t.history(period='1d')
+                tv = hist1['Volume'].iloc[-1] if not hist1.empty else 0
                 
-                # Get the latest volume from a 1-day history
-                today_volume = stock.history(period='1d')['Volume'].iloc[-1]
-                atm_iv = {}
-                straddle = None
-                first_atm_iv = None  # store current IV from the first valid chain
-                i = 0
-                data_inaccurate = False  # Flag for missing/zero bid/ask values
+                atm_ivs = {}
+                stprice=None
+                fi_iv=None
+                i=0
+                for e,chain in oc.items():
+                    calls, puts = chain.calls, chain.puts
+                    if calls.empty or puts.empty: continue
+                    call_idx = (calls['strike']-up).abs().idxmin()
+                    put_idx = (puts['strike']-up).abs().idxmin()
+                    civ = calls.loc[call_idx,'impliedVolatility']
+                    piv = puts.loc[put_idx,'impliedVolatility']
+                    av = (civ+piv)/2
+                    atm_ivs[e]=av
+                    if i==0:
+                        fi_iv=av
+                        cbid, cask = calls.loc[call_idx,'bid'], calls.loc[call_idx,'ask']
+                        pbid, pask = puts.loc[put_idx,'bid'], puts.loc[put_idx,'ask']
+                        if (cbid and cask and cbid>0 and cask>0 and pbid and pask and pbid>0 and pask>0):
+                            midc= (cbid+cask)/2
+                            midp= (pbid+pask)/2
+                            stprice= midc+midp
+                    i+=1
+                if not atm_ivs:
+                    return {"error":"No ATM IV found."}
                 
-                for exp_date, chain in options_chains.items():
-                    calls = chain.calls
-                    puts = chain.puts
-                    if calls.empty or puts.empty:
-                        continue
-                    
-                    call_idx = (calls['strike'] - underlying_price).abs().idxmin()
-                    put_idx = (puts['strike'] - underlying_price).abs().idxmin()
-                    call_iv = calls.loc[call_idx, 'impliedVolatility']
-                    put_iv = puts.loc[put_idx, 'impliedVolatility']
-                    atm_iv_value = (call_iv + put_iv) / 2.0
-                    atm_iv[exp_date] = atm_iv_value
-                    
-                    if i == 0:
-                        first_atm_iv = atm_iv_value
-                        call_bid = calls.loc[call_idx, 'bid']
-                        call_ask = calls.loc[call_idx, 'ask']
-                        put_bid = puts.loc[put_idx, 'bid']
-                        put_ask = puts.loc[put_idx, 'ask']
-                        
-                        # Guard rails: if any bid/ask is missing or <= 0, flag data as inaccurate.
-                        if (call_bid is None or call_ask is None or call_bid <= 0 or call_ask <= 0 or
-                            put_bid is None or put_ask is None or put_bid <= 0 or put_ask <= 0):
-                            self.logger.warning(f"Zero or missing bid/ask data for ticker {ticker} expiration {exp_date}. Data may be inaccurate.")
-                            data_inaccurate = True
-                        else:
-                            call_mid = (call_bid + call_ask) / 2.0
-                            put_mid = (put_bid + put_ask) / 2.0
-                            straddle = call_mid + put_mid
-                    i += 1
+                # build term structure
+                nowd = datetime.today().date()
+                ds, vs = [],[]
+                for exp,iv in atm_ivs.items():
+                    dtobj = datetime.strptime(exp, "%Y-%m-%d").date()
+                    dd = (dtobj-nowd).days
+                    ds.append(dd)
+                    vs.append(iv)
+                spline = self.build_term_structure(ds, vs)
+                iv30 = spline(30)
+                d0 = min(ds)
+                if d0==45:
+                    slope=0
+                else:
+                    dden= (45-d0) if (45-d0)!=0 else 1
+                    slope= (spline(45)-spline(d0))/dden
                 
-                if not atm_iv:
-                    return {"error": "Could not determine ATM IV for any expiration dates."}
+                h3 = t.history(period='3mo')
+                hv = self.yang_zhang_volatility(h3)
+                if hv==0:
+                    iv30_rv30=9999
+                else:
+                    iv30_rv30= iv30/hv
+                avgv= h3['Volume'].rolling(30).mean().dropna().iloc[-1] if not h3.empty else 0
                 
-                today = datetime.today().date()
-                dtes = []
-                ivs = []
-                for exp_date, iv in atm_iv.items():
-                    exp_date_obj = datetime.strptime(exp_date, "%Y-%m-%d").date()
-                    days_to_expiry = (exp_date_obj - today).days
-                    dtes.append(days_to_expiry)
-                    ivs.append(iv)
+                # ATR14
+                if not h3.empty:
+                    hi, lo = h3['High'], h3['Low']
+                    pc = h3['Close'].shift(1)
+                    tr = pd.concat([hi-lo, (hi-pc).abs(), (lo-pc).abs()], axis=1).max(axis=1)
+                    at14= tr.rolling(14).mean().iloc[-1]
+                else:
+                    at14=0
                 
-                term_spline = self.build_term_structure(dtes, ivs)
-                iv30 = term_spline(30)
-                ts_slope_0_45 = (term_spline(45) - term_spline(dtes[0])) / (45 - dtes[0])
-                
-                try:
-                    hist_vol = self.yang_zhang_volatility(stock.history(period='3mo'))
-                except Exception as e:
-                    self.logger.warning(f"Failed to get historical data, retrying with new proxy...")
-                    self.session_manager.rotate_session()
-                    stock.session = self.session_manager.get_session()
-                    hist_vol = self.yang_zhang_volatility(stock.history(period='3mo'))
-                
-                iv30_rv30 = iv30 / hist_vol
-                price_history = stock.history(period='3mo')
-                avg_volume = price_history['Volume'].rolling(30).mean().dropna().iloc[-1]
-                
-                # Compute ATR 14d
-                high = price_history['High']
-                low = price_history['Low']
-                prev_close = price_history['Close'].shift(1)
-                tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-                atr14 = tr.rolling(window=14).mean().iloc[-1]
-                
-                # Get market cap from stock info
-                market_cap = stock.info.get('marketCap', 0)
-                expected_move = f"{round(straddle / underlying_price * 100, 2)}%" if straddle else "N/A"
+                mc = t.info.get('marketCap',0)
+                if stprice and up!=0:
+                    exmo= f"{round(stprice/up*100,2)}%"
+                else:
+                    exmo= "N/A"
                 
                 return {
-                    'avg_volume': avg_volume >= 1500000,
+                    'avg_volume': avgv>=1500000,
+                    'avg_volume_value': avgv,
                     'iv30_rv30': iv30_rv30,
-                    'term_slope': ts_slope_0_45,
+                    'term_slope': slope,
                     'term_structure': iv30,
-                    'expected_move': expected_move,
-                    'underlying_price': underlying_price,
-                    'historical_volatility': hist_vol,
-                    'data_inaccurate': data_inaccurate,
-                    'current_iv': first_atm_iv,
-                    'atr14': atr14,
-                    'market_cap': market_cap,
-                    'volume': today_volume
+                    'expected_move': exmo,
+                    'underlying_price': up,
+                    'historical_volatility': hv,
+                    'current_iv': fi_iv,
+                    'atr14': at14,
+                    'market_cap': mc,
+                    'volume': tv
                 }
-                
+            
             except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    self.logger.warning(f"Attempt {retry_count} failed for {ticker}: {str(e)}. Rotating proxy and retrying...")
+                if attempt<2:
+                    self.logger.warning(f"Attempt {attempt} for {symbol} failed: {e}. Rotating proxy.")
                     self.session_manager.rotate_session()
                 else:
-                    self.logger.error(f"All attempts failed for {ticker}: {str(e)}")
-                    return {"error": f"Error occurred processing: {str(e)}"}
+                    self.logger.error(f"All attempts for {symbol} failed: {str(e)}")
+                    return {"error": f"Err: {e}"}
 
 
-# ------------------- Earnings Calendar Fetcher -------------------
+# ====================== EarningsCalendarFetcher ======================
 class EarningsCalendarFetcher:
-    """Fetch earnings calendar data with proxy support."""
-    
-    def __init__(self, proxy_manager: Optional[ProxyManager] = None):
+    """Fetch earnings data from investing.com"""
+    def __init__(self, proxy_manager=None):
         self.data_queue = Queue()
-        self.earnings_times = {}
+        self.earnings_times={}
         self.proxy_manager = proxy_manager or ProxyManager()
         self.session_manager = SessionManager(self.proxy_manager)
-        self._initialize_logging()
+        self._init_log()
     
-    def _initialize_logging(self):
+    def _init_log(self):
         self.logger = logging.getLogger('EarningsCalendarFetcher')
         self.logger.setLevel(logging.DEBUG)
         if not self.logger.handlers:
             fh = logging.FileHandler('earnings_calendar_debug.log')
             fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
+            fm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(fm)
             self.logger.addHandler(fh)
     
     def fetch_earnings_data(self, date: str) -> List[str]:
-        """
-        Fetch earnings data for a given date (YYYY-MM-DD) from investing.com.
-        Includes proxy support and automatic retry logic.
-        """
         max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
+        attempt = 0
+        ret = []
+
+        while attempt < max_retries:
             try:
-                self.logger.info(f"Fetching earnings data for date: {date}")
+                self.logger.info(f"Fetching earnings for {date}")
                 url = "https://www.investing.com/earnings-calendar/Service/getCalendarFilteredData"
-                headers = {
+                hd = {
                     'User-Agent': 'Mozilla/5.0',
                     'X-Requested-With': 'XMLHttpRequest',
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Referer': 'https://www.investing.com/earnings-calendar/'
                 }
-                payload = {
-                    'country[]': '5',  # US
+                pl = {
+                    'country[]': '5',       # US
                     'dateFrom': date,
                     'dateTo': date,
                     'currentTab': 'custom',
                     'limit_from': 0
                 }
-                
-                session = self.session_manager.get_session()
-                response = session.post(url, headers=headers, data=payload)
-                data = json.loads(response.text)
+                s = self.session_manager.get_session()
+                r = s.post(url, headers=hd, data=pl)
+                data = json.loads(r.text)
+
                 soup = BeautifulSoup(data['data'], 'html.parser')
                 rows = soup.find_all('tr')
-                earnings_data = []
                 self.earnings_times.clear()
-                
+
                 for row in rows:
+                    # Look for the company name span or other identifying HTML:
                     if not row.find('span', class_='earnCalCompanyName'):
                         continue
                     try:
                         ticker = row.find('a', class_='bold').text.strip()
                         timing_span = row.find('span', class_='genToolTip')
+
+                        # Default assumption:
                         timing = "During Market"
+
+                        # Check if there's a data-tooltip attribute:
                         if timing_span and 'data-tooltip' in timing_span.attrs:
-                            tooltip = timing_span['data-tooltip']
-                            if tooltip == 'Before market open':
+                            tip = timing_span['data-tooltip']
+                            if tip == 'Before market open':
                                 timing = 'Pre Market'
-                            elif tooltip == 'After market close':
+                            elif tip == 'After market close':
                                 timing = 'Post Market'
+
                         self.earnings_times[ticker] = timing
-                        earnings_data.append(ticker)
+                        ret.append(ticker)
                     except Exception as e:
-                        self.logger.error(f"Error processing row for ticker: {e}")
+                        self.logger.warning(f"Error parsing row: {e}")
                         continue
-                
-                self.logger.info(f"Successfully retrieved {len(earnings_data)} companies")
-                return earnings_data
-                
+
+                # <-- Only return *after* processing all rows
+                self.logger.info(f"Found {len(ret)} tickers for date {date}")
+                return ret
+
             except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    self.logger.warning(f"Attempt {retry_count} failed: {str(e)}. Rotating proxy and retrying...")
+                attempt += 1
+                if attempt < max_retries:
+                    self.logger.warning(f"Retry {attempt}: {e}. Rotating proxy.")
                     self.session_manager.rotate_session()
                 else:
-                    self.logger.error(f"All attempts failed: {str(e)}")
+                    self.logger.error(f"All attempts failed: {e}")
                     return []
-    
-    def get_earnings_time(self, ticker: str) -> str:
-        """Return the market timing for the given ticker."""
-        return self.earnings_times.get(ticker, 'Unknown')
 
-# ------------------- Data Cache -------------------
+        return ret
+        
+    def get_earnings_time(self, ticker: str)->str:
+        return self.earnings_times.get(ticker,'Unknown')
+
+
+# ====================== DataCache ======================
 class DataCache:
-    """Persistent cache for stock data with gap filling capabilities."""
-    
-    from typing import List, Dict, Optional, Tuple
-    
-    def __init__(self, cache_dir: str = "stock_cache"):
-        self.cache_dir = cache_dir
-        self.cache_expiry_days = 7  # Cache data expires after 7 days
+    """Simple persistent cache for stock data (pickled)."""
+    def __init__(self, cache_dir="stock_cache"):
+        self.cache_dir=cache_dir
+        self.cache_expiry_days=7
         self._ensure_cache_dir()
-        self._initialize_logging()
+        self._init_log()
     
-    def _initialize_logging(self):
-        """Initialize logging for the cache system."""
+    def _init_log(self):
         self.logger = logging.getLogger('DataCache')
         self.logger.setLevel(logging.DEBUG)
         if not self.logger.handlers:
             fh = logging.FileHandler('cache_debug.log')
             fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
+            fm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(fm)
             self.logger.addHandler(fh)
     
     def _ensure_cache_dir(self):
-        """Create cache directory if it doesn't exist."""
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
     
-    def _get_cache_key(self, date: str, tickers: List[str]) -> str:
-        """Generate a unique cache key for a date and list of tickers."""
-        tickers_str = "_".join(sorted(tickers))
-        data_str = f"{date}_{tickers_str}"
+    def _get_cache_key(self, date: str, tks: List[str])->str:
+        s = "_".join(sorted(tks))
+        data_str=f"{date}_{s}"
         return hashlib.md5(data_str.encode()).hexdigest()
     
-    def _get_cache_path(self, cache_key: str) -> str:
-        """Get the full path for a cache file."""
-        return os.path.join(self.cache_dir, f"{cache_key}.pkl")
+    def _get_cache_path(self, key: str)->str:
+        return os.path.join(self.cache_dir, f"{key}.pkl")
     
-    def _identify_missing_data(self, data: List[Dict]) -> List[Dict]:
-        """
-        Identify entries with missing or incomplete data.
-        Returns a list of dictionaries containing tickers with missing data.
-        """
-        missing_data = []
-        for entry in data:
-            is_missing = False
-            missing_fields = []
-            
-            # Check for missing or invalid values
-            if entry.get('expected_move') == 'N/A':
-                missing_fields.append('expected_move')
-                is_missing = True
-            
-            if entry.get('current_iv') is None:
-                missing_fields.append('current_iv')
-                is_missing = True
-            
-            if entry.get('term_structure') == 0 or entry.get('term_structure') == "N/A":
-                missing_fields.append('term_structure')
-                is_missing = True
-            
+    def _identify_missing_data(self, data: List[Dict])->List[Dict]:
+        missing=[]
+        for d in data:
+            is_missing=False
+            mf=[]
+            if d.get('expected_move')=='N/A':
+                mf.append('expected_move')
+                is_missing=True
+            if d.get('current_iv') is None:
+                mf.append('current_iv')
+                is_missing=True
+            if d.get('term_structure')==0 or d.get('term_structure')=='N/A':
+                mf.append('term_structure')
+                is_missing=True
             if is_missing:
-                missing_data.append({
-                    'ticker': entry['ticker'],
-                    'missing_fields': missing_fields,
-                    'earnings_time': entry.get('earnings_time', 'Unknown')
+                missing.append({
+                    'ticker': d['ticker'],
+                    'missing_fields': mf,
+                    'earnings_time': d.get('earnings_time','Unknown')
                 })
-        
-        return missing_data
+        return missing
     
-    def save_data(self, date: str, tickers: List[str], data: List[Dict]) -> None:
-        """Save data to cache, identifying any missing fields."""
-        cache_key = self._get_cache_key(date, tickers)
-        cache_path = self._get_cache_path(cache_key)
-        
-        # Identify missing data before saving
-        missing_data = self._identify_missing_data(data)
-        
-        cache_data = {
+    def save_data(self, date: str, tickers: List[str], data: List[Dict]):
+        ck = self._get_cache_key(date, tickers)
+        cp = self._get_cache_path(ck)
+        missing_data= self._identify_missing_data(data)
+        cdata={
             'timestamp': datetime.now(),
             'date': date,
             'tickers': tickers,
             'data': data,
-            'missing_data': missing_data  # Store information about missing data
+            'missing_data': missing_data
         }
-        
-        with open(cache_path, 'wb') as f:
-            pickle.dump(cache_data, f)
-        
+        with open(cp,'wb') as f:
+            pickle.dump(cdata,f)
         if missing_data:
-            self.logger.info(f"Saved cache with {len(missing_data)} entries having missing data")
+            self.logger.info(f"Saved with {len(missing_data)} missing.")
     
-    def get_data(self, date: str, tickers: List[str]) -> Tuple[Optional[List[Dict]], List[Dict]]:
-        """
-        Retrieve data from cache if it exists and is not expired.
-        Returns a tuple of (cached_data, missing_data_entries).
-        """
-        cache_key = self._get_cache_key(date, tickers)
-        cache_path = self._get_cache_path(cache_key)
-        
-        if not os.path.exists(cache_path):
-            return None, []
-        
+    def get_data(self, date: str, tickers: List[str])->Tuple[Optional[List[Dict]], List[Dict]]:
+        ck = self._get_cache_key(date,tickers)
+        cp = self._get_cache_path(ck)
+        if not os.path.exists(cp): return None,[]
         try:
-            with open(cache_path, 'rb') as f:
-                cache_data = pickle.load(f)
-            
-            # Check if cache is expired
-            cache_age = datetime.now() - cache_data['timestamp']
-            if cache_age.days >= self.cache_expiry_days:
-                os.remove(cache_path)  # Remove expired cache
-                return None, []
-            
-            return cache_data['data'], cache_data.get('missing_data', [])
+            with open(cp,'rb') as f:
+                c= pickle.load(f)
+            age = datetime.now()-c['timestamp']
+            if age.days>=self.cache_expiry_days:
+                os.remove(cp)
+                return None,[]
+            return c['data'], c['missing_data']
         except Exception as e:
-            self.logger.error(f"Error reading cache: {str(e)}")
-            return None, []
+            self.logger.error(f"Error reading cache: {e}")
+            return None,[]
     
-    def update_missing_data(self, date: str, tickers: List[str], new_data: Dict) -> None:
-        """
-        Update cache with new data for previously missing fields.
-        """
-        cache_key = self._get_cache_key(date, tickers)
-        cache_path = self._get_cache_path(cache_key)
-        
+    def update_missing_data(self, date:str, tickers: List[str], new_data: Dict):
+        ck= self._get_cache_key(date,tickers)
+        cp= self._get_cache_path(ck)
         try:
-            with open(cache_path, 'rb') as f:
-                cache_data = pickle.load(f)
-            
-            # Update the existing data with new information
-            for idx, entry in enumerate(cache_data['data']):
-                if entry['ticker'] == new_data['ticker']:
-                    # Update missing fields
-                    for key, value in new_data.items():
-                        if key in entry and (entry[key] == 'N/A' or entry[key] is None or entry[key] == 0):
-                            entry[key] = value
-            
-            # Recalculate missing data
-            cache_data['missing_data'] = self._identify_missing_data(cache_data['data'])
-            
-            # Save updated cache
-            with open(cache_path, 'wb') as f:
-                pickle.dump(cache_data, f)
-            
-            self.logger.info(f"Updated cache for ticker {new_data['ticker']}")
+            with open(cp,'rb') as f:
+                c = pickle.load(f)
+            for entry in c['data']:
+                if entry['ticker']== new_data['ticker']:
+                    for k,v in new_data.items():
+                        if k in entry and (entry[k]=='N/A' or entry[k] is None or entry[k]==0):
+                            entry[k]=v
+            c['missing_data']= self._identify_missing_data(c['data'])
+            with open(cp,'wb') as f:
+                pickle.dump(c,f)
+            self.logger.info(f"Updated cache for {new_data['ticker']}")
         except Exception as e:
-            self.logger.error(f"Error updating cache: {str(e)}")
+            self.logger.error(f"Error updating cache: {e}")
     
-    def clear_expired(self) -> None:
-        """Clear all expired cache files."""
-        for filename in os.listdir(self.cache_dir):
-            if not filename.endswith('.pkl'):
-                continue
-            
-            cache_path = os.path.join(self.cache_dir, filename)
-            try:
-                with open(cache_path, 'rb') as f:
-                    cache_data = pickle.load(f)
-                
-                cache_age = datetime.now() - cache_data['timestamp']
-                if cache_age.days >= self.cache_expiry_days:
-                    os.remove(cache_path)
-            except Exception as e:
-                self.logger.error(f"Error clearing cache file {filename}: {str(e)}")
-                # Remove corrupted cache files
-                os.remove(cache_path)
-# ------------------- EnhancedEarningScanner -------------------
+    def clear_expired(self):
+        for fn in os.listdir(self.cache_dir):
+            if fn.endswith('.pkl'):
+                cp = os.path.join(self.cache_dir,fn)
+                try:
+                    with open(cp,'rb') as f:
+                        c= pickle.load(f)
+                    age = datetime.now()-c['timestamp']
+                    if age.days>= self.cache_expiry_days:
+                        os.remove(cp)
+                except:
+                    os.remove(cp)
+
+
+# ====================== EnhancedEarningsScanner ======================
 class EnhancedEarningsScanner:
-    """Earnings scanner with persistent caching and optimized data fetching."""
+    def __init__(self, analyzer: OptionsAnalyzer):
+        self.analyzer= analyzer
+        self.calendar_fetcher= EarningsCalendarFetcher(self.analyzer.proxy_manager)
+        self.data_cache= DataCache()
+        self.batch_size=10
+        self.logger=None
+        self._init_log()
     
-    def __init__(self, options_analyzer: OptionsAnalyzer):
-        self.analyzer = options_analyzer
-        self.calendar_fetcher = EarningsCalendarFetcher(self.analyzer.proxy_manager)
-        self.data_cache = DataCache()
-        self.batch_size = 10
-        self.logger = None
-        self._initialize_logging()
-    
-    def _initialize_logging(self):
-        """Initialize logging configuration."""
+    def _init_log(self):
         self.logger = logging.getLogger('EnhancedEarningsScanner')
         self.logger.setLevel(logging.DEBUG)
         if not self.logger.handlers:
             fh = logging.FileHandler('earnings_scanner_debug.log')
             fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
+            fm= logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(fm)
             self.logger.addHandler(fh)
-
-    def batch_download_history(self, tickers: List[str]) -> Dict[str, pd.DataFrame]:
-        """Download historical data for multiple tickers in a single call."""
-        ticker_str = " ".join(tickers)
+    
+    def batch_download_history(self, tickers: List[str])->Dict[str,pd.DataFrame]:
+        ticker_str= " ".join(tickers)
         try:
             data = yf.download(
                 tickers=ticker_str,
@@ -867,543 +709,514 @@ class EnhancedEarningsScanner:
                 threads=True,
                 proxy=self.analyzer.session_manager.get_session().proxies
             )
-            
-            results = {}
-            if len(tickers) == 1:
-                # Handle single ticker case
-                results[tickers[0]] = data
+            res={}
+            if len(tickers)==1:
+                res[tickers[0]]= data
             else:
-                # Handle multiple tickers
-                for ticker in tickers:
+                for tk in tickers:
                     try:
-                        ticker_data = data.xs(ticker, axis=1, level=0)
-                        if not ticker_data.empty:
-                            results[ticker] = ticker_data
+                        df= data.xs(tk, axis=1, level=0)
+                        if not df.empty:
+                            res[tk]=df
                     except:
                         continue
-            
-            return results
+            return res
         except Exception as e:
-            self.logger.error(f"Error in batch download: {e}")
+            self.logger.error(f"batch download error: {e}")
             return {}
-
-    def scan_earnings_stocks(self, date: datetime, progress_callback: Optional[callable] = None) -> List[Dict]:
-        """Scan stocks with earnings, using cached data if available and filling in missing data."""
-        date_str = date.strftime('%Y-%m-%d')
-        self.logger.info(f"Starting earnings scan for date: {date_str}")
-        
-        # Get earnings stocks for the date
-        earnings_stocks = self.calendar_fetcher.fetch_earnings_data(date_str)
-        if not earnings_stocks:
+    
+    def scan_earnings_stocks(self, date: datetime, progress_callback=None)->List[Dict]:
+        ds= date.strftime('%Y-%m-%d')
+        self.logger.info(f"Scan earnings for {ds}")
+        e_stocks = self.calendar_fetcher.fetch_earnings_data(ds)
+        if not e_stocks:
             return []
+        cd,md= self.data_cache.get_data(ds,e_stocks)
+        global raw_results
         
-        # Check cache first
-        cached_data, missing_data = self.data_cache.get_data(date_str, earnings_stocks)
-        
-        if cached_data:
-            self.logger.info(f"Using cached data for {date_str}")
-            
-            if missing_data:
-                self.logger.info(f"Found {len(missing_data)} entries with missing data, attempting to fill gaps")
-                
-                # Process only stocks with missing data
-                missing_tickers = [entry['ticker'] for entry in missing_data]
-                completed = 0
-                total_missing = len(missing_tickers)
-                
-                # Process missing data in batches
-                batches = [missing_tickers[i:i + self.batch_size] 
-                        for i in range(0, len(missing_tickers), self.batch_size)]
-                
-                for batch in batches:
-                    # Batch download historical data for missing entries
-                    histories = self.batch_download_history(batch)
-                    
-                    # Process each stock in the batch
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(batch))) as executor:
-                        future_to_stock = {executor.submit(self.analyze_stock, stock, histories.get(stock)): stock 
-                                        for stock in batch}
-                        
-                        for future in concurrent.futures.as_completed(future_to_stock):
-                            stock = future_to_stock[future]
-                            completed += 1
+        if cd:
+            self.logger.info(f"Using cached data for {ds}")
+            raw_results= cd
+            if md:
+                self.logger.info(f"{len(md)} missing, attempting fill.")
+                missing_tickers= [m['ticker'] for m in md]
+                done=0
+                total= len(missing_tickers)
+                batches = [missing_tickers[i:i+self.batch_size] for i in range(0,total,self.batch_size)]
+                for b in batches:
+                    hist = self.batch_download_history(b)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
+                        fut2stk= {ex.submit(self.analyze_stock, st, hist.get(st)): st for st in b}
+                        for fut in concurrent.futures.as_completed(fut2stk):
+                            stsym= fut2stk[fut]
+                            done+=1
                             if progress_callback:
-                                # Scale progress to 20% of total (reserving 80% for initial scan)
-                                progress_value = 80 + (completed / total_missing * 20)
-                                progress_callback(progress_value)
-                            
+                                val= 80+(done/total*20)
+                                progress_callback(val)
                             try:
-                                result = future.result()
-                                if result:
-                                    # Update cache with new data
-                                    self.data_cache.update_missing_data(date_str, earnings_stocks, result)
+                                r= fut.result()
+                                if r:
+                                    self.data_cache.update_missing_data(ds,e_stocks,r)
                             except Exception as e:
-                                self.logger.error(f"Error updating {stock}: {str(e)}")
-                
-                # Get updated cache data
-                cached_data, missing_data = self.data_cache.get_data(date_str, earnings_stocks)
-            
+                                self.logger.error(f"Error updt {stsym}: {e}")
+                cd, _= self.data_cache.get_data(ds,e_stocks)
+                raw_results= cd
             if progress_callback:
                 progress_callback(100)
-            
-            return cached_data
+            return raw_results
         
-        # If no cache available, process all stocks
-        recommended_stocks = []
-        total_stocks = len(earnings_stocks)
-        completed = 0
-        
-        # Process in batches
-        batches = [earnings_stocks[i:i + self.batch_size] 
-                for i in range(0, len(earnings_stocks), self.batch_size)]
-        
-        for batch in batches:
-            # Batch download historical data
-            histories = self.batch_download_history(batch)
-            
-            # Process each stock in the batch
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(batch))) as executor:
-                future_to_stock = {executor.submit(self.analyze_stock, stock, histories.get(stock)): stock 
-                                for stock in batch}
-                
-                for future in concurrent.futures.as_completed(future_to_stock):
-                    stock = future_to_stock[future]
-                    completed += 1
+        recommended=[]
+        total_stocks= len(e_stocks)
+        done=0
+        batches= [e_stocks[i:i+self.batch_size] for i in range(0,total_stocks,self.batch_size)]
+        for b in batches:
+            hist = self.batch_download_history(b)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
+                fut2stk= {ex.submit(self.analyze_stock, st, hist.get(st)): st for st in b}
+                for ft in concurrent.futures.as_completed(fut2stk):
+                    st= fut2stk[ft]
+                    done+=1
                     if progress_callback:
-                        # Scale progress to 80% (reserving 20% for potential gap filling)
-                        progress_value = (completed / total_stocks * 80)
-                        progress_callback(progress_value)
-                    
+                        pc= (done/total_stocks*80)
+                        progress_callback(pc)
                     try:
-                        result = future.result()
-                        if result:
-                            recommended_stocks.append(result)
+                        r= ft.result()
+                        if r:
+                            recommended.append(r)
                     except Exception as e:
-                        self.logger.error(f"Error analyzing {stock}: {str(e)}")
+                        self.logger.error(f"Error processing future result: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Error analyzing {st}: {e}")
         
-        # Sort recommendations
-        recommended_stocks.sort(key=lambda x: (
-            x['recommendation'] != 'Recommended',
-            x['earnings_time'] == 'Unknown',
+        recommended.sort(key=lambda x:(
+            x['recommendation']!='Recommended',
+            x['earnings_time']=='Unknown',
             x['earnings_time'],
             x['ticker']
         ))
-        
-        # Cache the results
-        self.data_cache.save_data(date_str, earnings_stocks, recommended_stocks)
-        
+        self.data_cache.save_data(ds,e_stocks,recommended)
+        raw_results= recommended
         if progress_callback:
             progress_callback(100)
-        
-        return recommended_stocks
-
-    def analyze_stock(self, ticker: str, history_data: Optional[pd.DataFrame] = None) -> Optional[Dict]:
-        """Analyze a single stock using cached data where possible."""
+        return recommended
+    
+    def analyze_stock(self, ticker:str, history_data:Optional[pd.DataFrame]=None)->Optional[Dict]:
         try:
-            self.logger.debug(f"Analyzing stock: {ticker}")
-            
-            # Use provided historical data or fetch it
             if history_data is not None and not history_data.empty:
-                current_price = history_data['Close'].iloc[-1]
-                volume_data = history_data['Volume']
-                hist_vol = self.analyzer.yang_zhang_volatility(history_data)
-                avg_volume = volume_data.rolling(30).mean().dropna().iloc[-1]
-                today_volume = volume_data.iloc[-1]
+                cp= history_data['Close'].iloc[-1]
+                voldata= history_data['Volume']
+                hv= self.analyzer.yang_zhang_volatility(history_data)
+                tv = voldata.iloc[-1]
             else:
-                # Fallback to individual requests if no history provided
-                stock = self.analyzer.get_ticker(ticker)
-                history_data = stock.history(period='3mo')
-                current_price = history_data['Close'].iloc[-1]
-                volume_data = history_data['Volume']
-                hist_vol = self.analyzer.yang_zhang_volatility(history_data)
-                avg_volume = volume_data.rolling(30).mean().dropna().iloc[-1]
-                today_volume = volume_data.iloc[-1]
+                st= self.analyzer.get_ticker(ticker)
+                hd= st.history(period='3mo')
+                cp= hd['Close'].iloc[-1] if not hd.empty else 0
+                voldata= hd['Volume'] if not hd.empty else pd.Series([0])
+                hv= self.analyzer.yang_zhang_volatility(hd) if not hd.empty else 1
+                tv= voldata.iloc[-1] if not voldata.empty else 0
             
-            # Get options data
-            stock = self.analyzer.get_ticker(ticker)
-            options_data = self.analyzer.compute_recommendation(ticker)
-            
-            if isinstance(options_data, dict) and "error" not in options_data:
-                avg_volume_bool = options_data['avg_volume']
-                iv30_rv30_bool = options_data['iv30_rv30'] >= 1.25
-                ts_slope_bool = options_data['term_slope'] <= -0.00406
-                
-                if avg_volume_bool and iv30_rv30_bool and ts_slope_bool:
-                    rec = "Recommended"
-                elif ts_slope_bool and ((avg_volume_bool and not iv30_rv30_bool) or 
-                                      (iv30_rv30_bool and not avg_volume_bool)):
-                    rec = "Consider"
+            st2= self.analyzer.get_ticker(ticker)
+            od = self.analyzer.compute_recommendation(ticker)
+            if isinstance(od, dict) and "error" not in od:
+                avb= od['avg_volume']
+                ivcheck= od['iv30_rv30']>=1.25
+                slopecheck= od['term_slope']<=-0.00406
+                if avb and ivcheck and slopecheck:
+                    rec="Recommended"
+                elif slopecheck and ((avb and not ivcheck) or (ivcheck and not avb)):
+                    rec="Consider"
                 else:
-                    rec = "Avoid"
+                    rec="Avoid"
                 
                 return {
                     'ticker': ticker,
-                    'current_price': current_price,
-                    'market_cap': stock.info.get('marketCap', 0),
-                    'volume': today_volume,
-                    'avg_volume': avg_volume_bool,
+                    'current_price': cp,
+                    'market_cap': st2.info.get('marketCap',0),
+                    'volume': tv,
+                    'avg_volume': avb,
+                    'avg_volume_value': od.get('avg_volume_value',0),
                     'earnings_time': self.calendar_fetcher.get_earnings_time(ticker),
                     'recommendation': rec,
-                    'expected_move': options_data['expected_move'],
-                    'atr14': options_data['atr14'],
-                    'iv30_rv30': options_data['iv30_rv30'],
-                    'term_slope': options_data['term_slope'],
-                    'term_structure': options_data['term_structure'],
-                    'historical_volatility': hist_vol,
-                    'current_iv': options_data['current_iv']
+                    'expected_move': od.get('expected_move','N/A'),
+                    'atr14': od.get('atr14',0),
+                    'iv30_rv30': od.get('iv30_rv30',0),
+                    'term_slope': od.get('term_slope',0),
+                    'term_structure': od.get('term_structure',0),
+                    'historical_volatility': hv,
+                    'current_iv': od.get('current_iv',None)
                 }
-                
             return {
-                "ticker": ticker,
-                "current_price": current_price,
-                "market_cap": 0,
-                "volume": today_volume,
-                "avg_volume": False,
-                "earnings_time": "Unknown",
-                "recommendation": "Avoid",
-                "expected_move": "N/A",
-                "atr14": 0,
-                "iv30_rv30": 0,
-                "term_slope": 0,
-                "term_structure": 0,
-                "historical_volatility": hist_vol,
-                "current_iv": None
+                'ticker': ticker,
+                'current_price': cp,
+                'market_cap': 0,
+                'volume': tv,
+                'avg_volume': False,
+                'avg_volume_value': 0,
+                'earnings_time': "Unknown",
+                'recommendation': "Avoid",
+                'expected_move': "N/A",
+                'atr14': 0,
+                'iv30_rv30': 0,
+                'term_slope': 0,
+                'term_structure': 0,
+                'historical_volatility': hv,
+                'current_iv': None
             }
-            
         except Exception as e:
-            self.logger.error(f"Error in analyze_stock for {ticker}: {str(e)}")
+            self.logger.error(f"Analyze error for {ticker}: {e}")
             return None
-# ------------------- Interactive Chart Function -------------------
-def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager] = None):
-    """
-    Open an interactive Matplotlib window with a 1-year candlestick chart for the given ticker.
-    Users can zoom, pan, etc. with the standard Matplotlib toolbar. Includes proxy support.
-    """
+
+
+# ====================== Candlestick Chart Function ======================
+def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager]=None):
+    """Open a Matplotlib candlestick chart for the given ticker (1y history)."""
     try:
-        stock = yf.Ticker(ticker)
+        st= yf.Ticker(ticker)
         if session_manager:
-            stock.session = session_manager.get_session()
+            st.session = session_manager.get_session()
         
-        max_retries = 3
-        retry_count = 0
-        hist = None
-        
-        while retry_count < max_retries:
-            try:
-                hist = stock.history(period='1y')
-                if not hist.empty:
-                    break
-            except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries and session_manager:
-                    session_manager.rotate_session()
-                    stock.session = session_manager.get_session()
-                else:
-                    raise
-        
-        if hist is None or hist.empty:
-            sg.popup_error(f"No historical data available for {ticker}.")
+        hist= st.history(period='1y')
+        if hist.empty:
+            messagebox.showerror("Error", f"No historical data for {ticker}.")
             return
-            
-        # Create a candlestick chart using mplfinance with volume
-        mpf.plot(hist, type='candle', style='charles', 
-                title=f"{ticker} Candlestick Chart",
-                volume=True,
-                figsize=(12, 8),
-                panel_ratios=(2, 1))  # 2:1 ratio between price and volume panels
-        
-        # Show an interactive window (blocking until closed)
+        mpf.plot(hist, type='candle', style='charles', volume=True, title=f"{ticker} Chart")
         plt.show()
-        
     except Exception as e:
-        sg.popup_error(f"Error generating chart for {ticker}: {str(e)}")
+        messagebox.showerror("Chart Error", f"Error generating chart for {ticker}: {e}")
 
-# ------------------- Enhanced GUI -------------------
-def create_enhanced_gui():
-    """
-    Create the enhanced GUI with proxy support and advanced visualization capabilities.
-    """
-    # Initialize proxy manager and analyzer
-    proxy_manager = ProxyManager()
-    analyzer = OptionsAnalyzer(proxy_manager)
-    scanner = EnhancedEarningsScanner(analyzer)
-    
-    # Use a simpler system theme
-    sg.theme('SystemDefault')
-    
-    # Define table headings in the desired order
-    headings = [
-        "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Volume", "Earnings Time", 
-        "Recommendation", "Expected Move", "ATR 14d", "IV30/RV30", 
-        "Term Slope", "Term Structure", "Historical Vol", "Current IV"
-    ]
-    
-    # Add proxy settings to the layout
-    proxy_settings = [
-        [sg.Text("Proxy Settings:")],
-        [sg.Checkbox("Enable Proxy", key="-PROXY-", enable_events=True),
-         sg.Button("Update Proxies"),
-         sg.Text("Status:", size=(8, 1)),
-         sg.Text("Disabled", key="-PROXY-STATUS-", size=(20, 1))]
-    ]
-    
-    # Main layout with proxy settings
-    main_layout = [
-        [sg.Text("Enter Stock Symbol:"), 
-         sg.Input(key="stock", size=(20, 1)),
-         sg.Button("Analyze", bind_return_key=True)],
-        [sg.Column(proxy_settings)],
-        [sg.Text("Or scan earnings stocks:")],
-        [sg.CalendarButton('Choose Date', target='earnings_date', format='%Y-%m-%d'),
-         sg.Input(key='earnings_date', size=(20, 1), disabled=True),
-         sg.Button("Scan Earnings"),
-         sg.Combo(['All', 'Pre Market', 'Post Market', 'During Market'], 
-                  default_value='All', key='-FILTER-', enable_events=True)],
-        [sg.Table(values=[],
-                  headings=headings,
-                  auto_size_columns=True,
-                  display_row_numbers=False,
-                  justification='center',
-                  key='-TABLE-',
-                  num_rows=20,
-                  expand_x=True,
-                  expand_y=True,
-                  enable_events=True)],
-        [sg.Text("Status: Ready", key='-STATUS-', size=(80, 1))],
-        [sg.Button("Export to CSV"), sg.Button("Exit")]
-    ]
-    
-    window = sg.Window("Enhanced Options Analysis Tool", 
-                      main_layout,
-                      resizable=True,
-                      size=(1200, 800),
-                      finalize=True)
-    
-    # Variables to store table data and row colors for highlighting
-    all_data = []
-    row_colors = []
-    
-    def assign_row_color(idx: int, expected_move: str, recommendation: str) -> str:
-        """
-        Determine row color based on:
-          1) If expected_move == "N/A": GRAY
-          2) elif recommended => GREEN
-          3) elif consider => ORANGE
-          4) else => RED (avoid)
-        """
-        if expected_move == "N/A":
-            return 'gray'
-        elif recommendation == "Recommended":
-            return 'green'
-        elif recommendation == "Consider":
-            return 'orange'
-        else:  # "Avoid"
-            return 'red'
-    
-    def update_proxy_status():
-        """Update the proxy status display in the GUI."""
-        status = "Enabled" if proxy_manager.proxy_enabled else "Disabled"
-        if proxy_manager.proxy_enabled:
-            status += f" ({len(proxy_manager.proxies)} proxies)"
-        window["-PROXY-STATUS-"].update(status)
-    
-    while True:
-        event, values = window.read()
+
+# ====================== The Tkinter App ======================
+class EarningsTkApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Earnings Volatility Calculator (Tkinter)")
+
+        self.proxy_manager = ProxyManager()
+        self.analyzer= OptionsAnalyzer(self.proxy_manager)
+        self.scanner= EnhancedEarningsScanner(self.analyzer)
+
+        # Internal data
+        self.raw_results: List[Dict] = []
+        self.sort_orders= {}  # track ascending/descending by column
+
+        self.build_layout()
+
+    def build_layout(self):
+        # ---------- Proxy Settings ----------
+        proxy_frame= ttk.LabelFrame(self.root, text="Proxy Settings", padding=5)
+        proxy_frame.pack(side="top", fill="x", padx=5, pady=5)
+
+        self.proxy_var= tk.BooleanVar(value=False)
+        cb= ttk.Checkbutton(proxy_frame, text="Enable Proxy", variable=self.proxy_var, command=self.on_toggle_proxy)
+        cb.pack(side="left", padx=5)
+
+        btn_proxy_update= ttk.Button(proxy_frame, text="Update Proxies", command=self.on_update_proxies)
+        btn_proxy_update.pack(side="left", padx=5)
+
+        self.lbl_proxy_status= ttk.Label(proxy_frame, text="Disabled (0 proxies)")
+        self.lbl_proxy_status.pack(side="left", padx=5)
+
+        # ---------- Single Stock Analysis ----------
+        single_frame= ttk.Frame(self.root, padding=5)
+        single_frame.pack(side="top", fill="x")
+
+        ttk.Label(single_frame, text="Enter Stock Symbol:").pack(side="left", padx=5)
+        self.entry_symbol= ttk.Entry(single_frame, width=12)
+        self.entry_symbol.pack(side="left", padx=5)
+
+        btn_analyze= ttk.Button(single_frame, text="Analyze", command=self.on_analyze_stock)
+        btn_analyze.pack(side="left", padx=5)
+
+        # ---------- Earnings Scan with tkcalendar ----------
+        scan_frame= ttk.Frame(self.root, padding=5)
+        scan_frame.pack(side="top", fill="x")
+
+        ttk.Label(scan_frame, text="Earnings Date:").pack(side="left", padx=5)
+
+        # Use tkcalendar's DateEntry
+        self.cal_date= DateEntry(scan_frame, width=12, date_pattern='yyyy-MM-dd')
+        self.cal_date.pack(side="left", padx=5)
+
+        btn_scan= ttk.Button(scan_frame, text="Scan Earnings", command=self.on_scan_earnings)
+        btn_scan.pack(side="left", padx=5)
+
+        # ---------- Filters (Earnings Time + Recommendation) ----------
+        filter_frame= ttk.LabelFrame(self.root, text="Filters", padding=5)
+        filter_frame.pack(side="top", fill="x", padx=5, pady=5)
+
+        ttk.Label(filter_frame, text="Earnings Time Filter:").pack(side="left", padx=(0,5))
+        self.filter_time_var= tk.StringVar(value="All")
+        cbox_time= ttk.Combobox(filter_frame, textvariable=self.filter_time_var,
+                                values=["All","Pre Market","Post Market","During Market"],
+                                width=12)
+        cbox_time.pack(side="left", padx=5)
+        cbox_time.bind("<<ComboboxSelected>>", self.on_filter_changed)
+
+        ttk.Label(filter_frame, text="Recommendation Filter:").pack(side="left", padx=(10,5))
+        self.filter_rec_var= tk.StringVar(value="All")
+        cbox_rec= ttk.Combobox(filter_frame, textvariable=self.filter_rec_var,
+                               values=["All","Recommended","Consider","Avoid"],
+                               width=12)
+        cbox_rec.pack(side="left", padx=5)
+        cbox_rec.bind("<<ComboboxSelected>>", self.on_filter_changed)
+
+        # ---------- The Table ----------
+        table_frame= ttk.Frame(self.root)
+        table_frame.pack(side="top", fill="both", expand=True)
+
+        self.headings= [
+            "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Vol Check", "30D Volume",
+            "Earnings Time", "Recommendation", "Expected Move", "ATR 14d",
+            "IV30/RV30", "Term Slope", "Term Structure", "Historical Vol", "Current IV"
+        ]
+        self.tree= ttk.Treeview(table_frame, columns=self.headings, show="headings")
+        self.tree.pack(side="left", fill="both", expand=True)
         
-        if event in (sg.WINDOW_CLOSED, "Exit"):
-            break
+        for col in self.headings:
+            self.sort_orders[col]= True  # default ascending
+            # define the heading with a command so that clicking the heading sorts by that column
+            self.tree.heading(col, text=col,
+                              command=lambda c=col: self.on_column_heading_click(c))
+            self.tree.column(col, width=100)
+
+        vsb= ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        vsb.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=vsb.set)
+
+        # Tag configs for coloring rows
+        # recommended= green+white, consider= orange+black, avoid= red+white
+        self.tree.tag_configure("Recommended", background="green", foreground="white")
+        self.tree.tag_configure("Consider", background="orange", foreground="black")
+        self.tree.tag_configure("Avoid", background="red", foreground="white")
+
+        # Double-click row => candlestick chart
+        self.tree.bind("<Double-1>", self.on_table_double_click)
+
+        # ---------- Bottom Row with Status + Progress + Export + Exit ----------
+        bottom_frame= ttk.Frame(self.root, padding=5)
+        bottom_frame.pack(side="bottom", fill="x")
+
+        self.lbl_status= ttk.Label(bottom_frame, text="Status: Ready")
+        self.lbl_status.pack(side="left", padx=5)
+
+        btn_export= ttk.Button(bottom_frame, text="Export CSV", command=self.on_export_csv)
+        btn_export.pack(side="right", padx=5)
+
+        btn_exit= ttk.Button(bottom_frame, text="Exit", command=self.root.destroy)
+        btn_exit.pack(side="right", padx=5)
+
+        self.progress_var= tk.DoubleVar(value=0)
+        self.progress_bar= ttk.Progressbar(bottom_frame, orient="horizontal",
+                                           variable=self.progress_var, maximum=100, length=150)
+        self.progress_bar.pack(side="right", padx=10)
+
+    # ~~~~~~~~~~~~~~ Proxy Handlers ~~~~~~~~~~~~~~
+    def on_toggle_proxy(self):
+        self.proxy_manager.proxy_enabled= self.proxy_var.get()
+        self.update_proxy_status()
+
+    def on_update_proxies(self):
+        try:
+            self.proxy_manager.fetch_proxies()
+            self.update_proxy_status()
+            self.set_status("Proxies updated.")
+        except Exception as e:
+            self.set_status(f"Failed to update proxies: {e}")
+
+    def update_proxy_status(self):
+        if self.proxy_manager.proxy_enabled:
+            c= len(self.proxy_manager.proxies)
+            self.lbl_proxy_status.config(text=f"Enabled ({c} proxies)")
+        else:
+            self.lbl_proxy_status.config(text="Disabled (0 proxies)")
+
+    # ~~~~~~~~~~~~~~ Single Stock Analysis ~~~~~~~~~~~~~~
+    def on_analyze_stock(self):
+        ticker= self.entry_symbol.get().strip().upper()
+        if not ticker:
+            self.set_status("Please enter a stock symbol.")
+            return
+        self.set_status("Analyzing...")
+        self.clear_table()
+        self.raw_results.clear()
+
+        def worker():
+            r= self.scanner.analyze_stock(ticker)
+            if r:
+                self.raw_results= [r]
+            self.root.after(0, self.fill_table)
         
-        if event == "-PROXY-":
-            proxy_manager.proxy_enabled = values["-PROXY-"]
-            if proxy_manager.proxy_enabled and not proxy_manager.proxies:
-                try:
-                    proxy_manager.fetch_proxies()
-                    window['-STATUS-'].update("Proxies updated successfully")
-                except Exception as e:
-                    window['-STATUS-'].update(f"Failed to fetch proxies: {str(e)}")
-                    proxy_manager.proxy_enabled = False
-                    window["-PROXY-"].update(False)
-            update_proxy_status()
-        
-        elif event == "Update Proxies":
-            try:
-                proxy_manager.fetch_proxies()
-                window['-STATUS-'].update("Proxies updated successfully")
-                update_proxy_status()
-            except Exception as e:
-                window['-STATUS-'].update(f"Failed to fetch proxies: {str(e)}")
-        
-        elif event == "Analyze":
-            window['-STATUS-'].update("Analyzing stock...")
-            ticker = values.get("stock", "").strip().upper()
-            if not ticker:
-                window['-STATUS-'].update("Please enter a stock symbol")
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ~~~~~~~~~~~~~~ Earnings Scan ~~~~~~~~~~~~~~
+    def on_scan_earnings(self):
+        # get date from DateEntry (tkcalendar)
+        dt= self.cal_date.get_date()  # returns a datetime.date
+        self.clear_table()
+        self.raw_results.clear()
+        self.progress_var.set(0)
+        self.set_status("Scanning earnings...")
+
+        def progress_cb(val):
+            self.progress_var.set(val)
+
+        def worker():
+            results= self.scanner.scan_earnings_stocks(dt, progress_cb)
+            self.raw_results= results
+            self.set_status(f"Scan complete. Found {len(results)} stocks.")
+            self.root.after(0, self.fill_table)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ~~~~~~~~~~~~~~ Filters ~~~~~~~~~~~~~~
+    def on_filter_changed(self, event):
+        self.fill_table()  # reapply filters with the updated combos
+
+    def apply_filters(self, data: List[Dict]) -> List[Dict]:
+        # apply Earnings Time filter + Recommendation filter
+        time_val= self.filter_time_var.get()
+        rec_val= self.filter_rec_var.get()
+
+        filtered= []
+        for row in data:
+            # 1) filter by earnings time
+            et= row.get('earnings_time',"Unknown")
+            if time_val!="All" and et!= time_val:
                 continue
-            
-            try:
-                result = scanner.analyze_stock(ticker)
-                if result:
-                    # Build a single-row table using the new order
-                    row = [
-                        result['ticker'],
-                        f"${result['current_price']:.2f}",
-                        f"${result['market_cap']:,}" if result['market_cap'] else "N/A",
-                        f"{result['volume']:,}" if result['volume'] else "N/A",
-                        'PASS' if result['avg_volume'] else 'FAIL',
-                        result['earnings_time'],
-                        result['recommendation'],
-                        result['expected_move'],
-                        f"{result['atr14']:.2f}",
-                        f"{result['iv30_rv30']:.2f}",
-                        f"{result['term_slope']:.4f}",
-                        f"{result['term_structure']:.2%}" if result['term_structure'] else "N/A",
-                        f"{result['historical_volatility']:.2%}",
-                        f"{result['current_iv']:.2%}" if result['current_iv'] else "N/A"
-                    ]
-                    all_data = [row]
-                    
-                    # Assign color for this single row
-                    row_colors = []
-                    row_color = assign_row_color(
-                        idx=0, 
-                        expected_move=result['expected_move'], 
-                        recommendation=result['recommendation']
-                    )
-                    row_colors.append((0, row_color))
-                    
-                    window['-TABLE-'].update(values=all_data, row_colors=row_colors)
-                    window['-STATUS-'].update("Analysis complete")
-                else:
-                    window['-STATUS-'].update("No recommendation returned")
-            except Exception as e:
-                window['-STATUS-'].update(f"Error: {str(e)}")
+            # 2) filter by recommendation
+            rv= row.get('recommendation',"Avoid")
+            if rec_val!="All" and rv!=rec_val:
+                continue
+            filtered.append(row)
+        return filtered
+
+    # ~~~~~~~~~~~~~~ Table Helpers ~~~~~~~~~~~~~~
+    def fill_table(self):
+        self.clear_table()
+        # apply filters
+        filtered= self.apply_filters(self.raw_results)
+
+        # add rows with coloring based on recommendation
+        for row in filtered:
+            rec= row.get('recommendation',"Avoid")
+            row_vals= self.build_row_values(row)
+            # insert row with that tag => color
+            self.tree.insert("", "end", values=row_vals, tags=(rec,))
+
+    def clear_table(self):
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+
+    def build_row_values(self, row: Dict) -> List[str]:
+        """Return a 15-item list of strings, matching self.headings."""
+        return [
+            row.get('ticker',"N/A"),
+            f"${row.get('current_price',0):.2f}",
+            f"${row.get('market_cap',0):,}" if row.get('market_cap',0) else "N/A",
+            f"{row.get('volume',0):,}" if row.get('volume',0) else "N/A",
+            "PASS" if row.get('avg_volume') else "FAIL",
+            f"{int(row.get('avg_volume_value',0)):,}" if row.get('avg_volume_value',0) else "N/A",
+            row.get('earnings_time',"Unknown"),
+            row.get('recommendation',"Avoid"),
+            row.get('expected_move',"N/A"),
+            f"{row.get('atr14',0):.2f}",
+            f"{row.get('iv30_rv30',0):.2f}",
+            f"{row.get('term_slope',0):.4f}",
+            (f"{row.get('term_structure',0):.2%}" if row.get('term_structure',0) else "N/A"),
+            f"{row.get('historical_volatility',0):.2%}",
+            (f"{row.get('current_iv',0):.2%}" if row.get('current_iv',0) else "N/A")
+        ]
+
+    # ~~~~~~~~~~~~~~ Sorting by Heading Click ~~~~~~~~~~~~~~
+    def on_column_heading_click(self, colname: str):
+        # toggle ascending/descending
+        ascending= self.sort_orders[colname]
+        self.sort_orders[colname]= not ascending
+
+        # convert heading -> data key
+        key_map= {
+            "Ticker": "ticker",
+            "Price": "current_price",
+            "Market Cap": "market_cap",
+            "Volume 1d": "volume",
+            "Avg Vol Check": "avg_volume",
+            "30D Volume": "avg_volume_value",
+            "Earnings Time": "earnings_time",
+            "Recommendation": "recommendation",
+            "Expected Move": "expected_move",
+            "ATR 14d": "atr14",
+            "IV30/RV30": "iv30_rv30",
+            "Term Slope": "term_slope",
+            "Term Structure": "term_structure",
+            "Historical Vol": "historical_volatility",
+            "Current IV": "current_iv"
+        }
+        data_key= key_map.get(colname, colname)
         
-        elif event == "Scan Earnings":
-            try:
-                date_str = values.get('earnings_date')
-                if not date_str:
-                    sg.popup_error("Please select a date first!")
-                    continue
-                
-                date = datetime.strptime(date_str, '%Y-%m-%d')
-                progress_layout = [
-                    [sg.Text('Scanning earnings stocks...')],
-                    [sg.ProgressBar(100, orientation='h', size=(30, 20), key='progress')]
-                ]
-                progress_window = sg.Window('Progress', progress_layout, modal=True, finalize=True)
-                progress_bar = progress_window['progress']
-                
-                window['-STATUS-'].update("Scanning earnings stocks...")
-                result_holder = {'stocks': [], 'error': None}
-                
-                def update_progress(value):
-                    progress_bar.update(value)
-                    progress_window.refresh()
-                
-                def worker():
+        def transform_value(row: Dict):
+            val= row.get(data_key, 0)
+            if isinstance(val, str):
+                # e.g. "4.23%", or "$120"
+                if val.endswith('%'):
                     try:
-                        stocks = scanner.scan_earnings_stocks(date, update_progress)
-                        result_holder['stocks'] = stocks
-                    except Exception as e:
-                        result_holder['error'] = str(e)
-                
-                thread = threading.Thread(target=worker, daemon=True)
-                thread.start()
-                
-                while thread.is_alive():
-                    event_prog, _ = progress_window.read(timeout=100)
-                    if event_prog == sg.WINDOW_CLOSED:
-                        break
-                
-                progress_window.close()
-                
-                if result_holder['error']:
-                    window['-STATUS-'].update(f"Error: {result_holder['error']}")
-                else:
-                    stocks = result_holder['stocks']
-                    if not stocks:
-                        window['-STATUS-'].update("No recommended stocks found")
-                        continue
-                    
-                    table_data = []
-                    row_colors = []
-                    for idx, stock in enumerate(stocks):
-                        row = [
-                            stock['ticker'],
-                            f"${stock['current_price']:.2f}",
-                            f"${stock['market_cap']:,}" if stock['market_cap'] else "N/A",
-                            f"{stock['volume']:,}" if stock['volume'] else "N/A",
-                            'PASS' if stock['avg_volume'] else 'FAIL',
-                            stock['earnings_time'],
-                            stock['recommendation'],
-                            stock['expected_move'],
-                            f"{stock['atr14']:.2f}",
-                            f"{stock['iv30_rv30']:.2f}",
-                            f"{stock['term_slope']:.4f}",
-                            f"{stock['term_structure']:.2%}" if stock['term_structure'] else "N/A",
-                            f"{stock['historical_volatility']:.2%}",
-                            f"{stock['current_iv']:.2%}" if stock['current_iv'] else "N/A"
-                        ]
-                        table_data.append(row)
-                        
-                        # Assign color for each row
-                        color = assign_row_color(
-                            idx=idx, 
-                            expected_move=stock['expected_move'], 
-                            recommendation=stock['recommendation']
-                        )
-                        row_colors.append((idx, color))
-                    
-                    all_data = table_data
-                    window['-TABLE-'].update(values=table_data, row_colors=row_colors)
-                    window['-STATUS-'].update(f"Found {len(stocks)} recommended stocks")
-                    
-                    # Popup for incomplete straddle data
-                    incomplete_tickers = [s['ticker'] for s in stocks if s['expected_move'] == "N/A"]
-                    if incomplete_tickers:
-                        sg.popup("Incomplete Data",
-                                "The following tickers have incomplete data (expected move is N/A):",
-                                "\n".join(incomplete_tickers))
-                        
-            except Exception as e:
-                window['-STATUS-'].update(f"Error: {str(e)}")
-        
-        elif event == "-FILTER-":
-            # Filter based on the "Earnings Time" column
-            if all_data:
-                filter_value = values['-FILTER-']
-                if filter_value == 'All':
-                    filtered_data = all_data
-                else:
-                    filtered_data = [row for row in all_data if row[5] == filter_value]
-                window['-TABLE-'].update(values=filtered_data)
-                window['-STATUS-'].update(f"Showing {len(filtered_data)} stocks")
-        
-        elif event == "Export to CSV":
-            if not all_data:
-                window['-STATUS-'].update("No data to export")
-                continue
-            try:
-                date_str = values.get('earnings_date', datetime.now().strftime('%Y-%m-%d'))
-                filename = f"earnings_scan_{date_str}.csv"
-                import csv
-                with open(filename, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(headings)
-                    writer.writerows(all_data)
-                window['-STATUS-'].update(f"Successfully exported to {filename}")
-            except Exception as e:
-                window['-STATUS-'].update(f"Export failed: {str(e)}")
-        
-        elif event == "-TABLE-":
-            # When a row in the table is clicked, show an interactive candlestick chart
-            if values["-TABLE-"]:
-                selected_index = values["-TABLE-"][0]
-                selected_row = all_data[selected_index]
-                ticker = selected_row[0]
-                show_interactive_chart(ticker, analyzer.session_manager)
-    
-    window.close()
+                        return float(val[:-1])
+                    except:
+                        return val
+                if val.startswith('$'):
+                    try:
+                        return float(val.replace('$','').replace(',',''))
+                    except:
+                        return val
+                if val.isdigit():
+                    return int(val)
+            return val
 
-if __name__ == "__main__":
-    create_enhanced_gui()
+        self.raw_results.sort(key=lambda r: transform_value(r), reverse=not ascending)
+        self.fill_table()
+        adesc= "asc" if ascending else "desc"
+        self.set_status(f"Sorted by {colname} ({adesc})")
+
+    # ~~~~~~~~~~~~~~ Double-Click => Chart ~~~~~~~~~~~~~~
+    def on_table_double_click(self, event):
+        sel= self.tree.selection()
+        if not sel: return
+        item_id= sel[0]
+        row_vals= self.tree.item(item_id,"values")
+        if not row_vals: return
+        ticker= row_vals[0]  # first column is ticker
+        show_interactive_chart(ticker, self.analyzer.session_manager)
+
+    # ~~~~~~~~~~~~~~ Export CSV ~~~~~~~~~~~~~~
+    def on_export_csv(self):
+        # filtered data (not the entire raw set)
+        filtered= self.apply_filters(self.raw_results)
+        if not filtered:
+            self.set_status("No data to export.")
+            return
+        
+        f= filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")])
+        if not f: return
+        try:
+            import csv
+            with open(f,'w', newline='') as out:
+                writer= csv.writer(out)
+                writer.writerow(self.headings)
+                for row in filtered:
+                    rv= self.build_row_values(row)
+                    writer.writerow(rv)
+            self.set_status(f"Exported to {f}")
+        except Exception as e:
+            self.set_status(f"Export error: {e}")
+
+    # ~~~~~~~~~~~~~~ Helper ~~~~~~~~~~~~~~
+    def set_status(self, msg: str):
+        self.lbl_status.config(text=f"Status: {msg}")
+
+
+def main():
+    root= tk.Tk()
+    app= EarningsTkApp(root)
+    root.mainloop()
+
+if __name__=="__main__":
+    main()
