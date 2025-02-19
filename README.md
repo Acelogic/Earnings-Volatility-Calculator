@@ -1,149 +1,176 @@
 # Earnings Volatility Calculator
 
-The Earnings Volatility Calculator is a Python-based tool designed for educational and research purposes. It analyzes options data around earnings events, calculates various volatility metrics, and provides recommendations based on technical criteria. The tool includes a Windows-friendly GUI, interactive charts, and multi-threaded earnings scanning to help you assess stocks based on their earnings performance.
+A Python-based tool that analyzes options data around earnings events, calculates volatility metrics (like IV30/RV30, ATR, and Yang-Zhang volatility), and provides **Recommended**, **Consider**, or **Avoid** labels based on user-defined criteria. The calculator includes a Tkinter GUI for Windows (or other OS), interactive candlestick charts, and multi-threaded earnings scanning.
 
-> **Disclaimer:** This tool and its associated resources are provided for educational and research purposes only. They do not constitute financial advice. Always consult a professional financial advisor before making any investment decisions.
+> **Disclaimer**: All information contained in this repository, including the source code and associated resources, is provided **for educational and research purposes only**. It does **not** constitute financial advice or recommendation of any investment strategy. Trading options carries significant risk. Always consult a licensed financial advisor before making any investment decisions.
 
 ---
 
 ## Table of Contents
 
-- [Features](#features)
-- [Installation Instructions (Windows)](#installation-instructions-windows)
-- [Usage](#usage)
-- [Related Tools and Resources](#related-tools-and-resources)
-- [Support](#support)
-- [License](#license)
+1. [Overview](#overview)  
+2. [Core Features](#core-features)  
+3. [Motivation & Strategy Background](#motivation--strategy-background)  
+4. [Installation Instructions](#installation-instructions)  
+5. [Usage](#usage)  
+   - [Single Stock Analysis](#single-stock-analysis)  
+   - [Earnings Scan](#earnings-scan)  
+   - [Filtering Results](#filtering-results)  
+   - [Interactive Charts](#interactive-charts)  
+   - [Exporting Data](#exporting-data)  
+6. [Configuration & Customization](#configuration--customization)  
+7. [Troubleshooting & Common Issues](#troubleshooting--common-issues)  
+8. [Contributing](#contributing)  
+9. [License](#license)  
+10. [Additional Resources](#additional-resources)
 
 ---
 
-## Features
+## Overview
 
-- **Options Analysis:**  
-  Analyzes options data to compute key metrics such as implied volatility, historical volatility, ATR (Average True Range), and more.
+**Earnings Volatility Calculator** leverages market data from [Yahoo Finance](https://finance.yahoo.com/) and [Investing.com](https://www.investing.com/) to identify earnings events, retrieve option chains, and analyze a stock’s implied volatility (IV) relative to its historical or realized volatility (RV). It assigns a recommendation based on volume, IV/RV ratios, and implied volatility term structure slopes.
 
-- **Earnings Scanning:**  
-  Scans for stocks with upcoming earnings using earnings calendar data with multi-threaded processing for efficiency.
+This project was inspired by research indicating that **shorting volatility during earnings** can provide an edge if specific conditions (e.g., high implied volatility, steep term structure) are met. The included GUI offers a user-friendly way to:
 
-- **Interactive GUI:**  
-  A user-friendly interface (built with FreeSimpleGUI or PySimpleGUI) that lets you click on table rows to view interactive candlestick charts.
-
-- **Dynamic Recommendations:**  
-  Provides trading recommendations ("Recommended", "Consider", or "Avoid") based on criteria like average volume, IV30/RV30 ratio, and term structure slope.
-
-- **Data Export:**  
-  Export analyzed data to CSV for further analysis.
-
-- **Comprehensive Metrics:**  
-  Displays metrics including current stock price, market cap, volume, expected move, and more.
-
-For a detailed look at the implementation, check out the main source file:  
-[calculator.py](https://github.com/Acelogic/Earnings-Volatility-Calculator/blob/main/calculator.py)
+- **Scan** for upcoming earnings.
+- **Filter** by timing (Pre/Post/During Market) and recommendation.
+- **View** recommended setups.
+- **Generate** a candlestick chart with a double-click.
 
 ---
 
-## Installation Instructions (Windows)
+## Core Features
+
+- **Tkinter-Based GUI**  
+  - Table with sortable columns, color-coded rows, filtering options, and direct CSV export.
+
+- **Proxy & Multi-Threaded Support**  
+  - Optional proxy rotation for fetching data.  
+  - Concurrent requests for earnings scanning to speed up data collection.
+
+- **Options Analysis**  
+  - Computes 30-day realized volatility (Yang-Zhang or fallback method).  
+  - Fetches Implied Volatilities from ATM calls/puts.  
+  - Builds a simple term structure to approximate IV at different expirations.
+
+- **Recommendation Logic**  
+  - **Recommended**: Average daily volume ≥ 1,500,000 shares, IV30/RV30 ≥ 1.25, and term slope ≤ –0.00406.  
+  - **Consider**: Partial overlap of conditions.  
+  - **Avoid**: Fails key criteria or missing data.
+
+- **Candlestick Charts**  
+  - Double-click a row to pop up a Matplotlib “candle” chart showing up to 1 year of price data.
+
+---
+
+## Installation Instructions
 
 ### Prerequisites
 
-- **Operating System:** Windows 10 or higher
-- **Python:** Version 3.7 or later (Python 3.10.11 is recommended for some modules)
-- **Internet Connection:** Required to fetch live financial and earnings data
+- **Operating System**:  
+  - Windows 10 or higher (also works on macOS / Linux with minor adjustments)  
+- **Python**:  
+  - Version 3.7+; 3.10+ recommended  
+- **Internet Connection**:  
+  - Required for fetching stock market data from Yahoo Finance and Investing.com  
 
-### Step-by-Step Installation
+### Steps
 
-1. **Install Python**
+1. **Install Python**  
+   - [Download here](https://www.python.org/downloads/) and make sure to check **“Add Python to PATH”** during installation.
 
-   - Download the latest version of Python from the [official Python website](https://www.python.org/downloads/).
-   - Run the installer and **ensure you check "Add Python to PATH"** before clicking “Install Now”.
+2. **Open a Terminal / Command Prompt**  
+   - On Windows, press `Win + R`, type `cmd`, and press Enter.
 
-2. **Open Command Prompt**
-
-   - Press `Win + R`, type `cmd`, and hit Enter to open the Command Prompt.
-
-3. **Clone the Repository (Optional)**
-
-   If you wish to clone the repository locally, run:
+3. **Clone or Download the Repository**  
    ```bash
    git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
    cd Earnings-Volatility-Calculator
    ```
 
-4. **Install Required Python Packages**
-
-   Run the following command in the Command Prompt:  
+4. **Install Dependencies**  
    ```bash
-   pip install yfinance pandas numpy requests beautifulsoup4 matplotlib mplfinance scipy FreeSimpleGUI
+   pip install yfinance pandas numpy requests beautifulsoup4 matplotlib mplfinance scipy tkcalendar
    ```
 
-   **Note:**
-   - If you encounter issues with installing `FreeSimpleGUI` (as it might be a custom module), replace it with `PySimpleGUI` by modifying the import in the code:
-
-   **Replace this:**
-   ```python
-   import FreeSimpleGUI as sg
-   ```
-   **With this:**
-   ```python
-   import PySimpleGUI as sg
-   ```
-   - All other packages should install without issues.
-
-5. **Run the Application**
-
-   - Navigate to the directory where the repository is saved (or where you cloned it):  
-   ```bash
-   cd C:\path\to\your\directory
-   ```
-   - Run the Python script:  
+5. **Run the Application**  
    ```bash
    python calculator.py
    ```
+   The Tkinter UI should open.
 
 ---
 
 ## Usage
 
-- **Single Stock Analysis:**  
-  Enter a stock symbol in the GUI input field and click “Analyze” (or press Enter) to view detailed metrics and recommendations.
+### Single Stock Analysis
 
-- **Earnings Scan:**  
-  Use the “Choose Date” button to select an earnings date, then click “Scan Earnings”. The tool will fetch and analyze stocks with earnings on the selected date. You can filter the results by earnings time (e.g., Pre Market, Post Market, During Market).
+1. Launch the GUI (`python calculator.py`).  
+2. In the **“Enter Stock Symbol”** field (top panel), type the stock ticker (e.g. `AAPL`).  
+3. Click **“Analyze”**.  
 
-- **Interactive Charting:**  
-  Click on any row in the displayed table to open an interactive candlestick chart for that stock.
+### Earnings Scan
 
-- **Data Export:**  
-  Export the analysis results to a CSV file by clicking the “Export to CSV” button.
+1. Select a date using the **tkcalendar** date picker.  
+2. Click **“Scan Earnings”** to fetch a list of all US stocks with earnings on that date.  
 
----
+### Interactive Charts
 
-## Related Tools and Resources
+- **Double‐click** on any row in the table.  
+- A Matplotlib “candle” chart appears, showing approximately 1 year of price/volume history.
 
-- **Trade Calculator:**  
-  - All Python files and library requirements are located in the `trade_calculator` directory.  
-  - Built and tested on Python version 3.10.11.  
-  - Detailed installation and running instructions are available in this document.  
-  - If further assistance is needed, there are many YouTube tutorials available or you can join our Discord for help.
+### Exporting Data
 
-- **Monte Carlo / Backtest Results:**  
-  Detailed simulation and backtest results are available here.
-
-- **Trade Tracker Template:**  
-  Access the Trade Tracker Template in Google Sheets [here](https://docs.google.com/spreadsheets/).  
-  **Instructions:** Make a copy or download it for Excel (currently tested in Google Sheets).
-
-- **YouTube Video:**  
-  Watch our demonstration video [here](https://youtube.com/) and don’t forget to subscribe!
+- Click **“Export CSV”** at the bottom-right of the GUI.  
+- Choose a file name and location.
 
 ---
 
-## Support
+## Configuration & Customization
 
-For support or questions, feel free to open an issue on our GitHub repository or join our community on Discord.
+- **Proxy Usage**  
+  - Enable or disable proxies via the **“Enable Proxy”** checkbox.  
+  - Use **“Update Proxies”** to fetch a new list of free proxies.  
+
+- **Logging & Debug**  
+  - Debug logs are written to files (e.g., `options_analyzer_debug.log`).  
+
+---
+
+## Troubleshooting & Common Issues
+
+1. **“No module named tkcalendar”**  
+   - Install with `pip install tkcalendar`.
+2. **No Internet Access or Proxy Failures**  
+   - Disable proxy in the GUI or verify you have a valid network connection.  
+3. **Missing Data or “N/A”**  
+   - Some stocks may lack options or have incomplete data.  
+
+---
+
+## Contributing
+
+Contributions, bug reports, and feature requests are welcome!  
+- Open an issue or create a pull request on [GitHub](https://github.com/Acelogic/Earnings-Volatility-Calculator).
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](https://github.com/Acelogic/Earnings-Volatility-Calculator/blob/main/LICENSE) file for details.
+This project is licensed under the [MIT License](./LICENSE).
+
+---
+
+## Additional Resources
+
+- **Volatility Vibes Channel**  
+  [This Option Strategy Turned \$10k Into \$1 Million In One Year](https://www.youtube.com/@VolatilityVibes)  
+
+- **Trade Tracker Template**  
+  Google Sheets link: [Trade Tracker Template](https://docs.google.com/spreadsheets/)  
+
+- **Further Reading**  
+  - *Option Volatility & Pricing* by Sheldon Natenberg  
+  - *Options as a Strategic Investment* by Lawrence G. McMillan
+
+**Happy researching!**
