@@ -1133,7 +1133,7 @@ def create_enhanced_gui():
     
     # Define table headings in the desired order
     headings = [
-        "Ticker", "Price", "Market Cap", "Volume", "Avg Volume", "Earnings Time", 
+        "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Volume", "Earnings Time", 
         "Recommendation", "Expected Move", "ATR 14d", "IV30/RV30", 
         "Term Slope", "Term Structure", "Historical Vol", "Current IV"
     ]
