@@ -1,6 +1,5 @@
 beautifulsoup4==4.13.3
 FreeSimpleGUI==5.1.1
-FreeSimpleGUI==5.1.1
 matplotlib==3.10.0
 mplfinance==0.12.10b0
 numpy==2.2.3
