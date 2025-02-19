@@ -63,6 +63,24 @@ This project was inspired by research indicating that **shorting volatility duri
 
 ---
 
+## Motivation & Strategy Background
+
+This code is loosely based on the insights shared in the [Volatility Vibes YouTube channel](https://www.youtube.com/@VolatilityVibes) video, **“This Option Strategy Turned $10k Into $1 Million In One Year”**. The primary strategy revolves around **selling implied volatility (IV) around earnings** based on the observation that markets often **overprice** near-term earnings volatility.
+
+Key points from the research:
+
+1. **Term Structure & IV Overpricing**  
+   Earnings events concentrate uncertainty into near-term options, often causing **implied volatility** to spike and the term structure to invert (negative slope).  
+2. **Volume Matters**  
+   Stocks with healthy trading volume (both shares and options) often see heightened demand for protection and speculative bets, leading to higher IV.  
+3. **IV30 vs. RV30**  
+   When short-dated implied volatility is significantly higher than recent realized volatility, it may suggest **overpricing**.  
+4. **Risk Management**  
+   Selling naked straddles can be highly profitable but also suffers large drawdowns; the referenced video suggests **calendar spreads** might offer a safer risk profile.
+
+For a deep-dive into the underlying concepts, see the [video transcript](#) in the repository or the original YouTube link above.
+
+
 ## Installation Instructions
 
 ### Prerequisites
