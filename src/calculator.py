@@ -32,6 +32,20 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
+# ====================== Utility to Add Console Logging ======================
+def add_console_logging(logger: logging.Logger, level=logging.INFO):
+    """
+    Attach a StreamHandler to the given logger, if not already attached,
+    so that log messages also show up in the console.
+    """
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+
 # ====================== ProxyManager ======================
 class ProxyManager:
     def __init__(self):
@@ -49,6 +63,7 @@ class ProxyManager:
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)
+        add_console_logging(self.logger, level=logging.INFO)
     
     def fetch_proxyscrape(self) -> List[Dict[str, str]]:
         try:
@@ -223,6 +238,7 @@ class OptionsAnalyzer:
             form = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(form)
             self.logger.addHandler(fh)
+        add_console_logging(self.logger, level=logging.INFO)
     
     def safe_log(self, val: np.ndarray) -> np.ndarray:
         if IS_NUMPY_2:
@@ -441,7 +457,7 @@ class OptionsAnalyzer:
                     'historical_volatility': hv,
                     'current_iv': fi_iv,
                     'atr14': at14,
-                    'atr14_pct': at14_pct,  # <--- NEW FIELD
+                    'atr14_pct': at14_pct,
                     'market_cap': mc,
                     'volume': tv
                 }
@@ -472,6 +488,7 @@ class EarningsCalendarFetcher:
             fm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(fm)
             self.logger.addHandler(fh)
+        add_console_logging(self.logger, level=logging.INFO)
     
     def fetch_earnings_data(self, date: str) -> List[str]:
         max_retries = 3
@@ -555,6 +572,7 @@ class DataCache:
             fm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(fm)
             self.logger.addHandler(fh)
+        add_console_logging(self.logger, level=logging.INFO)
     
     def _ensure_cache_dir(self):
         if not os.path.exists(self.cache_dir):
@@ -569,8 +587,22 @@ class DataCache:
         return os.path.join(self.cache_dir, f"{key}.pkl")
     
     def _identify_missing_data(self, data: List[Dict])->List[Dict]:
+        """
+        Identify which entries are missing critical fields or marked as 'download_failed'.
+        We'll store them in 'missing_data' so we can attempt to fill them later.
+        """
         missing=[]
         for d in data:
+            ticker = d.get('ticker', 'UNKNOWN')
+            if d.get('download_failed', False):
+                # Entire download failed for this ticker
+                missing.append({
+                    'ticker': ticker,
+                    'reason': 'download_failed'
+                })
+                continue
+            
+            # If certain fields are 'N/A' or None, we consider them missing
             is_missing=False
             mf=[]
             if d.get('expected_move')=='N/A':
@@ -582,9 +614,10 @@ class DataCache:
             if d.get('term_structure')==0 or d.get('term_structure')=='N/A':
                 mf.append('term_structure')
                 is_missing=True
+            
             if is_missing:
                 missing.append({
-                    'ticker': d['ticker'],
+                    'ticker': ticker,
                     'missing_fields': mf,
                     'earnings_time': d.get('earnings_time','Unknown')
                 })
@@ -594,47 +627,74 @@ class DataCache:
         ck = self._get_cache_key(date, tickers)
         cp = self._get_cache_path(ck)
         missing_data= self._identify_missing_data(data)
+        
+        # Let's also create a set of tickers that outright failed:
+        failed_tickers = [x['ticker'] for x in missing_data if x.get('reason')=='download_failed']
+        
         cdata={
             'timestamp': datetime.now(),
             'date': date,
             'tickers': tickers,
             'data': data,
-            'missing_data': missing_data
+            'missing_data': missing_data,
+            'failed_tickers': failed_tickers,
         }
         with open(cp,'wb') as f:
             pickle.dump(cdata,f)
         if missing_data:
-            self.logger.info(f"Saved with {len(missing_data)} missing.")
+            self.logger.info(f"Saved with {len(missing_data)} missing or failed entries.")
+        else:
+            self.logger.info(f"Saved data for {len(data)} tickers with no missing/failed.")
     
-    def get_data(self, date: str, tickers: List[str])->Tuple[Optional[List[Dict]], List[Dict]]:
+    def get_data(self, date: str, tickers: List[str])->Tuple[Optional[List[Dict]], List[Dict], List[str]]:
+        """
+        Returns ( data, missing_data, failed_tickers ).
+        data can be None if no cache is found or it is expired.
+        """
         ck = self._get_cache_key(date,tickers)
         cp = self._get_cache_path(ck)
         if not os.path.exists(cp):
-            return None,[]
+            return None,[],[]
         try:
             with open(cp,'rb') as f:
                 c= pickle.load(f)
             age = datetime.now()-c['timestamp']
             if age.days>=self.cache_expiry_days:
+                self.logger.info(f"Cache expired for key {ck}. Removing...")
                 os.remove(cp)
-                return None,[]
-            return c['data'], c['missing_data']
+                return None,[],[]
+            return c['data'], c['missing_data'], c.get('failed_tickers', [])
         except Exception as e:
             self.logger.error(f"Error reading cache: {e}")
-            return None,[]
+            return None,[],[]
     
     def update_missing_data(self, date:str, tickers: List[str], new_data: Dict):
+        """
+        After we re-try a ticker, we update the cache with new_data if it has improved fields.
+        """
         ck= self._get_cache_key(date,tickers)
         cp= self._get_cache_path(ck)
         try:
             with open(cp,'rb') as f:
                 c = pickle.load(f)
+            # Update the entry for this ticker
             for entry in c['data']:
                 if entry['ticker']== new_data['ticker']:
+                    # If previously marked as failed, remove that
+                    entry.pop('download_failed', None)
+                    # Overwrite any previously missing or N/A fields
                     for k,v in new_data.items():
-                        if k in entry and (entry[k]=='N/A' or entry[k] is None or entry[k]==0):
-                            entry[k]=v
+                        if k in entry:
+                            oldv = entry[k]
+                            if oldv in [None, 'N/A', 0]:
+                                entry[k] = v
+                        else:
+                            entry[k] = v
+            
+            # Rebuild missing_data and failed_tickers
             c['missing_data']= self._identify_missing_data(c['data'])
+            c['failed_tickers'] = [x['ticker'] for x in c['missing_data'] if x.get('reason')=='download_failed']
+            
             with open(cp,'wb') as f:
                 pickle.dump(c,f)
             self.logger.info(f"Updated cache for {new_data['ticker']}")
@@ -651,8 +711,10 @@ class DataCache:
                     age = datetime.now()-c['timestamp']
                     if age.days>= self.cache_expiry_days:
                         os.remove(cp)
+                        self.logger.info(f"Removed expired cache file: {cp}")
                 except:
                     os.remove(cp)
+                    self.logger.warning(f"Removed corrupted cache file: {cp}")
 
 
 # ====================== EnhancedEarningsScanner ======================
@@ -674,9 +736,16 @@ class EnhancedEarningsScanner:
             fm= logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(fm)
             self.logger.addHandler(fh)
+        add_console_logging(self.logger, level=logging.INFO)
     
-    def batch_download_history(self, tickers: List[str])->Dict[str,pd.DataFrame]:
+    def batch_download_history(self, tickers: List[str]) -> Dict[str, Optional[pd.DataFrame]]:
+        """
+        Attempt to batch-download for all the tickers.
+        Return a dict: { ticker -> DataFrame or None if failed }
+        """
         ticker_str= " ".join(tickers)
+        self.logger.info(f"Batch downloading history for {len(tickers)} tickers...")
+        results = {t: None for t in tickers}
         try:
             data = yf.download(
                 tickers=ticker_str,
@@ -687,39 +756,59 @@ class EnhancedEarningsScanner:
                 threads=True,
                 proxy=self.analyzer.session_manager.get_session().proxies
             )
-            res={}
+            # If multiple tickers, 'data' is a multi-column DataFrame
+            # If single ticker, 'data' is a regular DataFrame
             if len(tickers)==1:
-                res[tickers[0]]= data
+                if not data.empty:
+                    results[tickers[0]] = data
             else:
                 for tk in tickers:
                     try:
                         df= data.xs(tk, axis=1, level=0)
                         if not df.empty:
-                            res[tk]=df
-                    except:
-                        continue
-            return res
+                            results[tk]= df
+                    except KeyError:
+                        # Means ticker wasn't found in the returned data
+                        self.logger.warning(f"No data returned for: {tk}")
         except Exception as e:
-            self.logger.error(f"batch download error: {e}")
-            return {}
+            self.logger.error(f"batch_download_history error: {e}")
+            # We'll rely on None as the default for tickers that weren't loaded
+
+        # Print summary
+        failed = [t for t, df in results.items() if df is None or df.empty]
+        succeeded = [t for t, df in results.items() if df is not None and not df.empty]
+        self.logger.info(f"Batch download done. Succeeded: {len(succeeded)}, Failed: {len(failed)}")
+        if failed:
+            self.logger.info(f"Failed tickers: {failed}")
+        return results
     
     def scan_earnings_stocks(self, date: datetime, progress_callback=None)->List[Dict]:
         ds= date.strftime('%Y-%m-%d')
-        self.logger.info(f"Scan earnings for {ds}")
+        self.logger.info(f"=== Starting scan for earnings date: {ds} ===")
         e_stocks = self.calendar_fetcher.fetch_earnings_data(ds)
         if not e_stocks:
+            self.logger.info("No earnings tickers found.")
             return []
-        cd,md= self.data_cache.get_data(ds,e_stocks)
         
-        if cd:
-            self.logger.info(f"Using cached data for {ds}")
-            raw_results= cd
-            if md:
-                self.logger.info(f"{len(md)} missing, attempting fill.")
-                missing_tickers= [m['ticker'] for m in md]
+        # Attempt to load from cache
+        cached_data, missing_data, failed_tickers = self.data_cache.get_data(ds, e_stocks)
+        
+        if cached_data is not None:
+            self.logger.info(f"Using cached data for {ds}. Found {len(cached_data)} tickers in cache.")
+            raw_results= cached_data
+            # Combine missing from fields + outright failed
+            missing_tickers = set()
+            for md in missing_data:
+                missing_tickers.add(md['ticker'])
+            for ft in failed_tickers:
+                missing_tickers.add(ft)
+            
+            if missing_tickers:
+                self.logger.info(f"Retrying {len(missing_tickers)} missing/failed tickers...")
+                mt_list = list(missing_tickers)
                 done=0
-                total= len(missing_tickers)
-                batches = [missing_tickers[i:i+self.batch_size] for i in range(0,total,self.batch_size)]
+                total= len(mt_list)
+                batches = [mt_list[i:i+self.batch_size] for i in range(0,total,self.batch_size)]
                 for b in batches:
                     hist = self.batch_download_history(b)
                     with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
@@ -735,17 +824,23 @@ class EnhancedEarningsScanner:
                                 if r:
                                     self.data_cache.update_missing_data(ds,e_stocks,r)
                             except Exception as e:
-                                self.logger.error(f"Error updt {stsym}: {e}")
-                cd, _= self.data_cache.get_data(ds,e_stocks)
-                raw_results= cd
+                                self.logger.error(f"Error updating {stsym}: {e}")
+                # Reload updated cache
+                cached_data, _, _= self.data_cache.get_data(ds, e_stocks)
+                raw_results= cached_data
+            else:
+                self.logger.info("No missing/failing tickers found in cache. Using existing data.")
             if progress_callback:
                 progress_callback(100)
             return raw_results
         
+        # No cache or cache expired => fresh fetch
+        self.logger.info(f"No valid cache found. Fresh scanning for {len(e_stocks)} tickers.")
         recommended=[]
         total_stocks= len(e_stocks)
         done=0
         batches= [e_stocks[i:i+self.batch_size] for i in range(0,total_stocks,self.batch_size)]
+        
         for b in batches:
             hist = self.batch_download_history(b)
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
@@ -762,36 +857,53 @@ class EnhancedEarningsScanner:
                             recommended.append(r)
                     except Exception as e:
                         self.logger.error(f"Error processing future result: {e}")
-                    except Exception as e:
-                        self.logger.error(f"Error analyzing {st}: {e}")
         
-        recommended.sort(key=lambda x:(
+        # Filter out any `None` results before sorting
+        recommended = [r for r in recommended if r is not None]
+
+        recommended.sort(key=lambda x: (
             x['recommendation']!='Recommended',
             x['earnings_time']=='Unknown',
             x['earnings_time'],
             x['ticker']
         ))
+        self.logger.info(f"Finished scanning. Found {len(recommended)} results. Saving to cache.")
         self.data_cache.save_data(ds,e_stocks,recommended)
         if progress_callback:
             progress_callback(100)
         return recommended
     
-    def analyze_stock(self, ticker:str, history_data:Optional[pd.DataFrame]=None)->Optional[Dict]:
+    def analyze_stock(self, ticker: str, history_data: Optional[pd.DataFrame] = None) -> Optional[Dict]:
+        """
+        Attempt to analyze a single ticker. 
+        If history_data is None or empty, we mark it as 'download_failed'.
+        If the ticker is OTC (exchange in {'PNK','Other OTC','OTC','GREY'}), skip it entirely.
+        """
         try:
-            if history_data is not None and not history_data.empty:
-                cp= history_data['Close'].iloc[-1]
-                voldata= history_data['Volume']
-                hv= self.analyzer.yang_zhang_volatility(history_data)
-                tv = voldata.iloc[-1]
-            else:
-                st= self.analyzer.get_ticker(ticker)
-                hd= st.history(period='3mo')
-                cp= hd['Close'].iloc[-1] if not hd.empty else 0
-                voldata= hd['Volume'] if not hd.empty else pd.Series([0])
-                hv= self.analyzer.yang_zhang_volatility(hd) if not hd.empty else 1
-                tv= voldata.iloc[-1] if not voldata.empty else 0
+            # First, check the exchange—skip if it's OTC
+            st2 = self.analyzer.get_ticker(ticker)
+            exchange = st2.info.get('exchange', '')
+            # Common OTC identifiers
+            otc_exchanges = {"PNK", "Other OTC", "OTC", "GREY"}
+            if exchange in otc_exchanges:
+                self.logger.info(f"[SKIP] Ticker '{ticker}' is OTC (exchange='{exchange}').")
+                return None
             
-            st2= self.analyzer.get_ticker(ticker)
+            if history_data is None or history_data.empty:
+                # Mark as "failed" so we can re-try next run
+                self.logger.warning(f"History data missing for {ticker}; marking download_failed.")
+                return {
+                    'ticker': ticker,
+                    'download_failed': True,
+                    'recommendation': "Avoid",
+                    'earnings_time': self.calendar_fetcher.get_earnings_time(ticker),
+                }
+            
+            cp= history_data['Close'].iloc[-1]
+            voldata= history_data['Volume']
+            hv= self.analyzer.yang_zhang_volatility(history_data)
+            tv = voldata.iloc[-1] if not voldata.empty else 0
+            
             od = self.analyzer.compute_recommendation(ticker)
             if isinstance(od, dict) and "error" not in od:
                 avb= od['avg_volume']
@@ -807,7 +919,7 @@ class EnhancedEarningsScanner:
                 return {
                     'ticker': ticker,
                     'current_price': cp,
-                    'market_cap': st2.info.get('marketCap',0),
+                    'market_cap': od.get('market_cap',0),
                     'volume': tv,
                     'avg_volume': avb,
                     'avg_volume_value': od.get('avg_volume_value',0),
@@ -815,13 +927,14 @@ class EnhancedEarningsScanner:
                     'recommendation': rec,
                     'expected_move': od.get('expected_move','N/A'),
                     'atr14': od.get('atr14',0),
-                    'atr14_pct': od.get('atr14_pct',0),  # <--- ATR % included here
+                    'atr14_pct': od.get('atr14_pct',0),
                     'iv30_rv30': od.get('iv30_rv30',0),
                     'term_slope': od.get('term_slope',0),
                     'term_structure': od.get('term_structure',0),
                     'historical_volatility': hv,
                     'current_iv': od.get('current_iv',None)
                 }
+            # If there's an error from compute_recommendation
             return {
                 'ticker': ticker,
                 'current_price': cp,
@@ -829,7 +942,7 @@ class EnhancedEarningsScanner:
                 'volume': tv,
                 'avg_volume': False,
                 'avg_volume_value': 0,
-                'earnings_time': "Unknown",
+                'earnings_time': self.calendar_fetcher.get_earnings_time(ticker),
                 'recommendation': "Avoid",
                 'expected_move': "N/A",
                 'atr14': 0,
@@ -956,7 +1069,6 @@ class EarningsTkApp:
         table_frame= ttk.Frame(self.root, padding=0)
         table_frame.pack(side="top", fill="both", expand=True)
 
-        # -- Updated: Added "ATR 14d %" column --
         self.headings= [
             "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Vol Check", "30D Volume",
             "Earnings Time", "Recommendation", "Expected Move", "ATR 14d", "ATR 14d %",
@@ -1030,11 +1142,15 @@ class EarningsTkApp:
         self.raw_results.clear()
 
         def worker():
-            r= self.scanner.analyze_stock(ticker)
+            # We'll simulate a single batch download:
+            hist_map = self.scanner.batch_download_history([ticker])
+            r= self.scanner.analyze_stock(ticker, hist_map.get(ticker))
+            # Only store if it's not None (i.e. not OTC or total fail)
             if r:
                 self.raw_results= [r]
             self.root.after(0, self.fill_table)
-        
+            self.set_status("Analysis complete.")
+
         threading.Thread(target=worker, daemon=True).start()
 
     # -------- Earnings Scan --------
@@ -1088,26 +1204,29 @@ class EarningsTkApp:
             self.tree.delete(iid)
 
     def build_row_values(self, row: Dict) -> List[str]:
-        """
-        Adds a new column for the 14-day ATR as a percentage ('ATR 14d %').
-        """
         return [
             row.get('ticker',"N/A"),
-            f"${row.get('current_price',0):.2f}",
-            f"${row.get('market_cap',0):,}" if row.get('market_cap',0) else "N/A",
-            f"{row.get('volume',0):,}" if row.get('volume',0) else "N/A",
-            "PASS" if row.get('avg_volume') else "FAIL",
-            f"{int(row.get('avg_volume_value',0)):,}" if row.get('avg_volume_value',0) else "N/A",
+            (f"${row.get('current_price',0):.2f}"
+             if 'current_price' in row else "N/A"),
+            (f"${row.get('market_cap',0):,}"
+             if row.get('market_cap',0) else "N/A"),
+            (f"{row.get('volume',0):,}"
+             if row.get('volume',0) else "N/A"),
+            ("PASS" if row.get('avg_volume') else "FAIL"),
+            (f"{int(row.get('avg_volume_value',0)):,}"
+             if row.get('avg_volume_value',0) else "N/A"),
             row.get('earnings_time',"Unknown"),
             row.get('recommendation',"Avoid"),
             row.get('expected_move',"N/A"),
             f"{row.get('atr14',0):.2f}",
-            f"{row.get('atr14_pct',0):.2f}%",  # <--- display ATR14% here
+            f"{row.get('atr14_pct',0):.2f}%",
             f"{row.get('iv30_rv30',0):.2f}",
             f"{row.get('term_slope',0):.4f}",
-            (f"{row.get('term_structure',0):.2%}" if row.get('term_structure',0) else "N/A"),
+            (f"{row.get('term_structure',0):.2%}"
+             if row.get('term_structure',0) else "N/A"),
             f"{row.get('historical_volatility',0):.2%}",
-            (f"{row.get('current_iv',0):.2%}" if row.get('current_iv',0) else "N/A")
+            (f"{row.get('current_iv',0):.2%}"
+             if row.get('current_iv',0) else "N/A")
         ]
 
     # -------- Sorting --------
@@ -1138,19 +1257,11 @@ class EarningsTkApp:
         def transform_value(row: Dict):
             val= row.get(data_key, 0)
             if isinstance(val, str):
-                if val.endswith('%'):
-                    try:
-                        # strip '%' and convert to float
-                        return float(val[:-1])
-                    except:
-                        return val
-                if val.startswith('$'):
-                    try:
-                        return float(val.replace('$','').replace(',',''))
-                    except:
-                        return val
-                if val.isdigit():
-                    return int(val)
+                txt = val.replace('%','').replace('$','').replace(',','')
+                try:
+                    return float(txt)
+                except:
+                    return val
             return val
 
         self.raw_results.sort(key=lambda r: transform_value(r), reverse=not ascending)
