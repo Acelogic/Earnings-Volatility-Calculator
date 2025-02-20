@@ -32,6 +32,52 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
+# ====================== OTC Ticker Updater ======================
+def update_otc_tickers():
+    """
+    Downloads OTC tickers from StockAnalysis API and writes them to otc-tickers.txt.
+    """
+    base_url = "https://api.stockanalysis.com/api/screener/a/f"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://stockanalysis.com/",
+        "Origin": "https://stockanalysis.com",
+    }
+    params = {
+        "m": "marketCap",
+        "s": "desc",
+        "c": "no,s,n,marketCap,price,change,revenue",
+        "cn": "1000",
+        "f": "exchangeCode-is-OTC,subtype-is-stock",
+        "i": "symbols"
+    }
+    all_tickers = []
+    page = 1
+
+    while True:
+        params["p"] = page
+        response = requests.get(base_url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        page_data = data.get("data", {}).get("data", [])
+        if not page_data:
+            break
+        for item in page_data:
+            full_symbol = item.get("s", "")
+            ticker = full_symbol.split("/")[-1] if "/" in full_symbol else full_symbol
+            all_tickers.append(ticker)
+        print(f"Processed page {page}")
+        page += 1
+
+    with open("otc-tickers.txt", "w") as f:
+        for ticker in all_tickers:
+            f.write(f"{ticker}\n")
+
+    print("Total tickers count:", len(all_tickers))
+    print("Tickers have been written to otc-tickers.txt")
+
 # ====================== Utility to Add Console Logging ======================
 def add_console_logging(logger: logging.Logger, level=logging.INFO):
     """
@@ -44,7 +90,6 @@ def add_console_logging(logger: logging.Logger, level=logging.INFO):
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         ch.setFormatter(formatter)
         logger.addHandler(ch)
-
 
 # ====================== ProxyManager ======================
 class ProxyManager:
@@ -67,7 +112,8 @@ class ProxyManager:
     
     def fetch_proxyscrape(self) -> List[Dict[str, str]]:
         try:
-            url = ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000"
+            url = ("https://api.proxyscrape.com/v2/"
+                   "?request=displayproxies&protocol=http&timeout=10000"
                    "&country=all&ssl=all&anonymity=all")
             resp = requests.get(url, timeout=15)
             if resp.status_code == 200:
@@ -148,7 +194,6 @@ class ProxyManager:
             return []
     
     def fetch_proxies(self) -> None:
-        import concurrent.futures
         all_proxies = []
         sources = [
             self.fetch_proxyscrape,
@@ -193,7 +238,6 @@ class ProxyManager:
             return self.current_proxy
         return None
 
-
 # ====================== SessionManager ======================
 class SessionManager:
     def __init__(self, proxy_manager: ProxyManager):
@@ -217,10 +261,9 @@ class SessionManager:
     def get_session(self) -> requests.Session:
         return self.session
 
-
 # ====================== OptionsAnalyzer ======================
 NUMPY_VERSION = tuple(map(int, np.__version__.split('.')[:2]))
-IS_NUMPY_2 = NUMPY_VERSION[0] >= 2
+IS_NUMPY_2 = (NUMPY_VERSION[0] >= 2)
 
 class OptionsAnalyzer:
     def __init__(self, proxy_manager=None):
@@ -264,17 +307,20 @@ class OptionsAnalyzer:
         cutoff = today + timedelta(days=45)
         sdates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
         arr = []
-        for i,d in enumerate(sdates):
+        for i, d in enumerate(sdates):
             if d >= cutoff:
                 arr = [x.strftime("%Y-%m-%d") for x in sdates[:i+1]]
                 break
         if arr:
-            if arr[0] == today.strftime("%Y-%m-%d"):
-                return arr[1:]
+            if arr[0] == today.strftime("%Y-%m-%d") and len(arr) > 1:
+                arr = arr[1:]
             return arr
-        raise ValueError("No date 45+ days out found.")
-    
-    def yang_zhang_volatility(self, pdf: pd.DataFrame, window=30, trading_periods=252, return_last_only=True):
+        else:
+            return [x.strftime("%Y-%m-%d") for x in sdates]
+
+    def yang_zhang_volatility(self, pdf: pd.DataFrame,
+                              window=30, trading_periods=252,
+                              return_last_only=True):
         try:
             log_ho = self.safe_log(pdf['High']/pdf['Open'])
             log_lo = self.safe_log(pdf['Low']/pdf['Open'])
@@ -283,22 +329,27 @@ class OptionsAnalyzer:
             log_oc_sq = log_oc**2
             log_cc = self.safe_log(pdf['Close']/pdf['Close'].shift(1))
             log_cc_sq = log_cc**2
-            rs = log_ho*(log_ho-log_co) + log_lo*(log_lo-log_co)
+            rs = log_ho*(log_ho - log_co) + log_lo*(log_lo - log_co)
+
             close_vol = log_cc_sq.rolling(window=window).sum()/(window-1.0)
             open_vol = log_oc_sq.rolling(window=window).sum()/(window-1.0)
             rs_ = rs.rolling(window=window).sum()/(window-1.0)
+
             k = 0.34/(1.34 + (window+1)/(window-1))
             out = self.safe_sqrt(open_vol + k*close_vol + (1-k)*rs_) * self.safe_sqrt(trading_periods)
             if return_last_only:
                 return out.iloc[-1]
-            return out.dropna()
+            else:
+                return out.dropna()
         except Exception as e:
             if not self.warnings_shown:
                 warnings.warn(f"Error in Yang-Zhang: {e}")
-                self.warnings_shown=True
-            return self.calculate_simple_volatility(pdf,window,trading_periods,return_last_only)
+                self.warnings_shown = True
+            return self.calculate_simple_volatility(pdf, window, trading_periods, return_last_only)
     
-    def calculate_simple_volatility(self, pdf: pd.DataFrame, window=30, trading_periods=252, return_last_only=True):
+    def calculate_simple_volatility(self, pdf: pd.DataFrame,
+                                    window=30, trading_periods=252,
+                                    return_last_only=True):
         try:
             rets = pdf['Close'].pct_change().dropna()
             vol = rets.rolling(window=window).std()*np.sqrt(trading_periods)
@@ -317,6 +368,7 @@ class OptionsAnalyzer:
             idx = da.argsort()
             da, va = da[idx], va[idx]
             f = interp1d(da, va, kind='linear', fill_value="extrapolate")
+
             def tspline(dte):
                 if dte < da[0]:
                     return float(va[0])
@@ -324,6 +376,7 @@ class OptionsAnalyzer:
                     return float(va[-1])
                 else:
                     return float(f(dte))
+            
             return tspline
         except Exception as e:
             warnings.warn(f"Error building term structure: {e}")
@@ -344,29 +397,25 @@ class OptionsAnalyzer:
                 else:
                     raise ValueError(f"Cannot get price: {e}")
     
-    def compute_recommendation(self, symbol: str)->Dict:
-        """
-        Conditions for "Recommended":
-         - 30-day avg volume >= 1,500,000
-         - IV30/RV30 >= 1.25
-         - Term slope <= -0.00406
-        """
+    def compute_recommendation(self, symbol: str) -> Dict:
         for attempt in range(3):
             try:
                 s = symbol.strip().upper()
                 if not s:
-                    return {"error":"No symbol provided."}
+                    return {"error": "No symbol provided."}
+                
                 t = self.get_ticker(s)
-                if len(t.options)==0:
-                    return {"error":f"No options for {s}."}
+                if not t.options:
+                    return {"error": f"No options for {s}."}
+                
                 exps = list(t.options)
                 exps = self.filter_dates(exps)
                 oc = {}
                 for e in exps:
                     try:
                         oc[e] = t.option_chain(e)
-                    except:
-                        self.logger.warning(f"Couldn't get chain {e}. Rotating.")
+                    except Exception as ex_:
+                        self.logger.warning(f"Couldn't get chain {e} for {s}: {ex_}")
                         self.session_manager.rotate_session()
                         t.session = self.session_manager.get_session()
                         oc[e] = t.option_chain(e)
@@ -376,78 +425,79 @@ class OptionsAnalyzer:
                 tv = hist1['Volume'].iloc[-1] if not hist1.empty else 0
                 
                 atm_ivs = {}
-                stprice=None
-                fi_iv=None
-                i=0
-                for e,chain in oc.items():
+                stprice = None
+                fi_iv = None
+                i = 0
+                for e, chain in oc.items():
                     calls, puts = chain.calls, chain.puts
-                    if calls.empty or puts.empty: 
+                    if calls.empty or puts.empty:
                         continue
-                    call_idx = (calls['strike']-up).abs().idxmin()
-                    put_idx = (puts['strike']-up).abs().idxmin()
-                    civ = calls.loc[call_idx,'impliedVolatility']
-                    piv = puts.loc[put_idx,'impliedVolatility']
-                    av = (civ+piv)/2
-                    atm_ivs[e]=av
-                    if i==0:
-                        fi_iv=av
-                        cbid, cask = calls.loc[call_idx,'bid'], calls.loc[call_idx,'ask']
-                        pbid, pask = puts.loc[put_idx,'bid'], puts.loc[put_idx,'ask']
-                        if (cbid and cask and cbid>0 and cask>0 and pbid and pask and pbid>0 and pask>0):
-                            midc= (cbid+cask)/2
-                            midp= (pbid+pask)/2
-                            stprice= midc+midp
-                    i+=1
+                    call_idx = (calls['strike'] - up).abs().idxmin()
+                    put_idx = (puts['strike'] - up).abs().idxmin()
+                    
+                    civ = calls.loc[call_idx, 'impliedVolatility']
+                    piv = puts.loc[put_idx, 'impliedVolatility']
+                    av = (civ + piv)/2
+                    atm_ivs[e] = av
+                    
+                    if i == 0:
+                        fi_iv = av
+                        cbid, cask = calls.loc[call_idx, 'bid'], calls.loc[call_idx, 'ask']
+                        pbid, pask = puts.loc[put_idx, 'bid'], puts.loc[put_idx, 'ask']
+                        if (cbid and cask and cbid > 0 and cask > 0 and
+                            pbid and pask and pbid > 0 and pask > 0):
+                            midc = (cbid + cask)/2
+                            midp = (pbid + pask)/2
+                            stprice = midc + midp
+                    i += 1
+                
                 if not atm_ivs:
-                    return {"error":"No ATM IV found."}
+                    return {"error": "No ATM IV found."}
                 
                 nowd = datetime.today().date()
-                ds, vs = [],[]
-                for exp,iv in atm_ivs.items():
-                    dtobj = datetime.strptime(exp, "%Y-%m-%d").date()
-                    dd = (dtobj-nowd).days
+                ds, vs = [], []
+                for exp_, iv_ in atm_ivs.items():
+                    dtobj = datetime.strptime(exp_, "%Y-%m-%d").date()
+                    dd = (dtobj - nowd).days
                     ds.append(dd)
-                    vs.append(iv)
+                    vs.append(iv_)
+                
                 spline = self.build_term_structure(ds, vs)
                 iv30 = spline(30)
                 d0 = min(ds)
-                if d0==45:
-                    slope=0
+                if d0 == 45:
+                    slope = 0
                 else:
-                    dden= (45-d0) if (45-d0)!=0 else 1
-                    slope= (spline(45)-spline(d0))/dden
+                    dden = (45 - d0) if (45 - d0) != 0 else 1
+                    slope = (spline(45) - spline(d0))/dden
                 
                 h3 = t.history(period='3mo')
                 hv = self.yang_zhang_volatility(h3)
-                if hv==0:
-                    iv30_rv30=9999
+                if hv == 0:
+                    iv30_rv30 = 9999
                 else:
-                    iv30_rv30= iv30/hv
-                avgv= h3['Volume'].rolling(30).mean().dropna().iloc[-1] if not h3.empty else 0
+                    iv30_rv30 = iv30/hv
                 
-                # ATR14
+                avgv = h3['Volume'].rolling(30).mean().dropna().iloc[-1] if not h3.empty else 0
+                
                 if not h3.empty:
                     hi, lo = h3['High'], h3['Low']
                     pc = h3['Close'].shift(1)
                     tr = pd.concat([hi-lo, (hi-pc).abs(), (lo-pc).abs()], axis=1).max(axis=1)
-                    at14= tr.rolling(14).mean().iloc[-1]
+                    at14 = tr.rolling(14).mean().iloc[-1]
                 else:
-                    at14=0
-
-                # ATR14 as percentage (relative to current close 'up')
-                if up != 0:
-                    at14_pct = (at14 / up) * 100.0
+                    at14 = 0
+                
+                at14_pct = (at14/up*100.0) if (up != 0) else 0
+                mc = t.info.get('marketCap', 0)
+                
+                if stprice and up != 0:
+                    exmo = f"{round(stprice/up*100,2)}%"
                 else:
-                    at14_pct = 0
-
-                mc = t.info.get('marketCap',0)
-                if stprice and up!=0:
-                    exmo= f"{round(stprice/up*100,2)}%"
-                else:
-                    exmo= "N/A"
+                    exmo = "N/A"
                 
                 return {
-                    'avg_volume': avgv>=1500000,
+                    'avg_volume': avgv >= 1_500_000,
                     'avg_volume_value': avgv,
                     'iv30_rv30': iv30_rv30,
                     'term_slope': slope,
@@ -462,19 +512,18 @@ class OptionsAnalyzer:
                     'volume': tv
                 }
             except Exception as e:
-                if attempt<2:
+                if attempt < 2:
                     self.logger.warning(f"Attempt {attempt} for {symbol} failed: {e}. Rotating proxy.")
                     self.session_manager.rotate_session()
                 else:
                     self.logger.error(f"All attempts for {symbol} failed: {str(e)}")
                     return {"error": f"Err: {e}"}
 
-
 # ====================== EarningsCalendarFetcher ======================
 class EarningsCalendarFetcher:
     def __init__(self, proxy_manager=None):
         self.data_queue = Queue()
-        self.earnings_times={}
+        self.earnings_times = {}
         self.proxy_manager = proxy_manager or ProxyManager()
         self.session_manager = SessionManager(self.proxy_manager)
         self._init_log()
@@ -525,7 +574,7 @@ class EarningsCalendarFetcher:
                     try:
                         ticker = row.find('a', class_='bold').text.strip()
                         timing_span = row.find('span', class_='genToolTip')
-                        timing = "During Market"  # default
+                        timing = "During Market"
                         if timing_span and 'data-tooltip' in timing_span.attrs:
                             tip = timing_span['data-tooltip']
                             if tip == 'Before market open':
@@ -540,7 +589,6 @@ class EarningsCalendarFetcher:
 
                 self.logger.info(f"Found {len(ret)} tickers for date {date}")
                 return ret
-
             except Exception as e:
                 attempt += 1
                 if attempt < max_retries:
@@ -551,15 +599,14 @@ class EarningsCalendarFetcher:
                     return []
         return ret
         
-    def get_earnings_time(self, ticker: str)->str:
-        return self.earnings_times.get(ticker,'Unknown')
-
+    def get_earnings_time(self, ticker: str) -> str:
+        return self.earnings_times.get(ticker, 'Unknown')
 
 # ====================== DataCache ======================
 class DataCache:
     def __init__(self, cache_dir="stock_cache"):
-        self.cache_dir=cache_dir
-        self.cache_expiry_days=7
+        self.cache_dir = cache_dir
+        self.cache_expiry_days = 7
         self._ensure_cache_dir()
         self._init_log()
     
@@ -578,125 +625,83 @@ class DataCache:
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
     
-    def _get_cache_key(self, date: str, tks: List[str])->str:
+    def _get_cache_key(self, date: str, tks: List[str]) -> str:
         s = "_".join(sorted(tks))
-        data_str=f"{date}_{s}"
+        data_str = f"{date}_{s}"
         return hashlib.md5(data_str.encode()).hexdigest()
     
-    def _get_cache_path(self, key: str)->str:
+    def _get_cache_path(self, key: str) -> str:
         return os.path.join(self.cache_dir, f"{key}.pkl")
     
-    def _identify_missing_data(self, data: List[Dict])->List[Dict]:
-        """
-        Identify which entries are missing critical fields or marked as 'download_failed'.
-        We'll store them in 'missing_data' so we can attempt to fill them later.
-        """
-        missing=[]
+    def _identify_missing_data(self, data: List[Dict]) -> List[Dict]:
+        missing = []
         for d in data:
-            ticker = d.get('ticker', 'UNKNOWN')
-            if d.get('download_failed', False):
-                # Entire download failed for this ticker
-                missing.append({
-                    'ticker': ticker,
-                    'reason': 'download_failed'
-                })
-                continue
-            
-            # If certain fields are 'N/A' or None, we consider them missing
-            is_missing=False
-            mf=[]
-            if d.get('expected_move')=='N/A':
+            is_missing = False
+            mf = []
+            if d.get('expected_move') == 'N/A':
                 mf.append('expected_move')
-                is_missing=True
+                is_missing = True
             if d.get('current_iv') is None:
                 mf.append('current_iv')
-                is_missing=True
-            if d.get('term_structure')==0 or d.get('term_structure')=='N/A':
+                is_missing = True
+            if d.get('term_structure') in [0, 'N/A']:
                 mf.append('term_structure')
-                is_missing=True
-            
+                is_missing = True
             if is_missing:
                 missing.append({
-                    'ticker': ticker,
+                    'ticker': d['ticker'],
                     'missing_fields': mf,
-                    'earnings_time': d.get('earnings_time','Unknown')
+                    'earnings_time': d.get('earnings_time', 'Unknown')
                 })
         return missing
     
     def save_data(self, date: str, tickers: List[str], data: List[Dict]):
         ck = self._get_cache_key(date, tickers)
         cp = self._get_cache_path(ck)
-        missing_data= self._identify_missing_data(data)
-        
-        # Let's also create a set of tickers that outright failed:
-        failed_tickers = [x['ticker'] for x in missing_data if x.get('reason')=='download_failed']
-        
-        cdata={
+        missing_data = self._identify_missing_data(data)
+        cdata = {
             'timestamp': datetime.now(),
             'date': date,
             'tickers': tickers,
             'data': data,
-            'missing_data': missing_data,
-            'failed_tickers': failed_tickers,
+            'missing_data': missing_data
         }
-        with open(cp,'wb') as f:
-            pickle.dump(cdata,f)
+        with open(cp, 'wb') as f:
+            pickle.dump(cdata, f)
         if missing_data:
-            self.logger.info(f"Saved with {len(missing_data)} missing or failed entries.")
-        else:
-            self.logger.info(f"Saved data for {len(data)} tickers with no missing/failed.")
+            self.logger.info(f"Saved with {len(missing_data)} missing.")
     
-    def get_data(self, date: str, tickers: List[str])->Tuple[Optional[List[Dict]], List[Dict], List[str]]:
-        """
-        Returns ( data, missing_data, failed_tickers ).
-        data can be None if no cache is found or it is expired.
-        """
-        ck = self._get_cache_key(date,tickers)
+    def get_data(self, date: str, tickers: List[str]) -> Tuple[Optional[List[Dict]], List[Dict]]:
+        ck = self._get_cache_key(date, tickers)
         cp = self._get_cache_path(ck)
         if not os.path.exists(cp):
-            return None,[],[]
+            return None, []
         try:
-            with open(cp,'rb') as f:
-                c= pickle.load(f)
-            age = datetime.now()-c['timestamp']
-            if age.days>=self.cache_expiry_days:
-                self.logger.info(f"Cache expired for key {ck}. Removing...")
+            with open(cp, 'rb') as f:
+                c = pickle.load(f)
+            age = datetime.now() - c['timestamp']
+            if age.days >= self.cache_expiry_days:
                 os.remove(cp)
-                return None,[],[]
-            return c['data'], c['missing_data'], c.get('failed_tickers', [])
+                return None, []
+            return c['data'], c['missing_data']
         except Exception as e:
             self.logger.error(f"Error reading cache: {e}")
-            return None,[],[]
+            return None, []
     
-    def update_missing_data(self, date:str, tickers: List[str], new_data: Dict):
-        """
-        After we re-try a ticker, we update the cache with new_data if it has improved fields.
-        """
-        ck= self._get_cache_key(date,tickers)
-        cp= self._get_cache_path(ck)
+    def update_missing_data(self, date: str, tickers: List[str], new_data: Dict):
+        ck = self._get_cache_key(date, tickers)
+        cp = self._get_cache_path(ck)
         try:
-            with open(cp,'rb') as f:
+            with open(cp, 'rb') as f:
                 c = pickle.load(f)
-            # Update the entry for this ticker
             for entry in c['data']:
-                if entry['ticker']== new_data['ticker']:
-                    # If previously marked as failed, remove that
-                    entry.pop('download_failed', None)
-                    # Overwrite any previously missing or N/A fields
-                    for k,v in new_data.items():
-                        if k in entry:
-                            oldv = entry[k]
-                            if oldv in [None, 'N/A', 0]:
-                                entry[k] = v
-                        else:
+                if entry['ticker'] == new_data['ticker']:
+                    for k, v in new_data.items():
+                        if (k in entry) and (entry[k] in [None, 'N/A', 0]):
                             entry[k] = v
-            
-            # Rebuild missing_data and failed_tickers
-            c['missing_data']= self._identify_missing_data(c['data'])
-            c['failed_tickers'] = [x['ticker'] for x in c['missing_data'] if x.get('reason')=='download_failed']
-            
-            with open(cp,'wb') as f:
-                pickle.dump(c,f)
+            c['missing_data'] = self._identify_missing_data(c['data'])
+            with open(cp, 'wb') as f:
+                pickle.dump(c, f)
             self.logger.info(f"Updated cache for {new_data['ticker']}")
         except Exception as e:
             self.logger.error(f"Error updating cache: {e}")
@@ -704,27 +709,24 @@ class DataCache:
     def clear_expired(self):
         for fn in os.listdir(self.cache_dir):
             if fn.endswith('.pkl'):
-                cp = os.path.join(self.cache_dir,fn)
+                cp = os.path.join(self.cache_dir, fn)
                 try:
-                    with open(cp,'rb') as f:
-                        c= pickle.load(f)
-                    age = datetime.now()-c['timestamp']
-                    if age.days>= self.cache_expiry_days:
+                    with open(cp, 'rb') as f:
+                        c = pickle.load(f)
+                    age = datetime.now() - c['timestamp']
+                    if age.days >= self.cache_expiry_days:
                         os.remove(cp)
-                        self.logger.info(f"Removed expired cache file: {cp}")
                 except:
                     os.remove(cp)
-                    self.logger.warning(f"Removed corrupted cache file: {cp}")
-
 
 # ====================== EnhancedEarningsScanner ======================
 class EnhancedEarningsScanner:
     def __init__(self, analyzer: OptionsAnalyzer):
-        self.analyzer= analyzer
-        self.calendar_fetcher= EarningsCalendarFetcher(self.analyzer.proxy_manager)
-        self.data_cache= DataCache()
-        self.batch_size=10
-        self.logger=None
+        self.analyzer = analyzer
+        self.calendar_fetcher = EarningsCalendarFetcher(self.analyzer.proxy_manager)
+        self.data_cache = DataCache()
+        self.batch_size = 10
+        self.logger = None
         self._init_log()
     
     def _init_log(self):
@@ -733,19 +735,17 @@ class EnhancedEarningsScanner:
         if not self.logger.handlers:
             fh = logging.FileHandler('earnings_scanner_debug.log')
             fh.setLevel(logging.DEBUG)
-            fm= logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(fm)
             self.logger.addHandler(fh)
         add_console_logging(self.logger, level=logging.INFO)
     
-    def batch_download_history(self, tickers: List[str]) -> Dict[str, Optional[pd.DataFrame]]:
-        """
-        Attempt to batch-download for all the tickers.
-        Return a dict: { ticker -> DataFrame or None if failed }
-        """
-        ticker_str= " ".join(tickers)
-        self.logger.info(f"Batch downloading history for {len(tickers)} tickers...")
-        results = {t: None for t in tickers}
+    def batch_download_history(self, tickers: List[str]) -> Dict[str, pd.DataFrame]:
+        results = {}
+        if not tickers:
+            return results
+        
+        ticker_str = " ".join(tickers)
         try:
             data = yf.download(
                 tickers=ticker_str,
@@ -756,185 +756,166 @@ class EnhancedEarningsScanner:
                 threads=True,
                 proxy=self.analyzer.session_manager.get_session().proxies
             )
-            # If multiple tickers, 'data' is a multi-column DataFrame
-            # If single ticker, 'data' is a regular DataFrame
-            if len(tickers)==1:
+            if len(tickers) == 1:
                 if not data.empty:
                     results[tickers[0]] = data
-            else:
-                for tk in tickers:
-                    try:
-                        df= data.xs(tk, axis=1, level=0)
-                        if not df.empty:
-                            results[tk]= df
-                    except KeyError:
-                        # Means ticker wasn't found in the returned data
-                        self.logger.warning(f"No data returned for: {tk}")
+                return results
+            
+            for tk in tickers:
+                try:
+                    df = data.xs(tk, axis=1, level=0)
+                    if not df.empty:
+                        results[tk] = df
+                except KeyError:
+                    self.logger.warning(f"No data returned for {tk}.")
         except Exception as e:
             self.logger.error(f"batch_download_history error: {e}")
-            # We'll rely on None as the default for tickers that weren't loaded
-
-        # Print summary
-        failed = [t for t, df in results.items() if df is None or df.empty]
-        succeeded = [t for t, df in results.items() if df is not None and not df.empty]
-        self.logger.info(f"Batch download done. Succeeded: {len(succeeded)}, Failed: {len(failed)}")
-        if failed:
-            self.logger.info(f"Failed tickers: {failed}")
         return results
     
-    def scan_earnings_stocks(self, date: datetime, progress_callback=None)->List[Dict]:
-        ds= date.strftime('%Y-%m-%d')
-        self.logger.info(f"=== Starting scan for earnings date: {ds} ===")
+    def scan_earnings_stocks(self, date: datetime, progress_callback=None) -> List[Dict]:
+        ds = date.strftime('%Y-%m-%d')
+        self.logger.info(f"Scan earnings for {ds}")
         e_stocks = self.calendar_fetcher.fetch_earnings_data(ds)
+        
+        # Load OTC tickers from file and filter them out to avoid unnecessary yfinance calls.
+        try:
+            with open("otc-tickers.txt", "r") as f:
+                otc_tickers = {line.strip().upper() for line in f if line.strip()}
+        except FileNotFoundError:
+            otc_tickers = set()
+        original_count = len(e_stocks)
+        e_stocks = [ticker for ticker in e_stocks if ticker.upper() not in otc_tickers]
+        self.logger.info(f"Filtered out {original_count - len(e_stocks)} OTC tickers.")
+        
         if not e_stocks:
-            self.logger.info("No earnings tickers found.")
             return []
         
-        # Attempt to load from cache
-        cached_data, missing_data, failed_tickers = self.data_cache.get_data(ds, e_stocks)
+        cached_data, missing_data = self.data_cache.get_data(ds, e_stocks)
         
-        if cached_data is not None:
-            self.logger.info(f"Using cached data for {ds}. Found {len(cached_data)} tickers in cache.")
-            raw_results= cached_data
-            # Combine missing from fields + outright failed
-            missing_tickers = set()
-            for md in missing_data:
-                missing_tickers.add(md['ticker'])
-            for ft in failed_tickers:
-                missing_tickers.add(ft)
-            
-            if missing_tickers:
-                self.logger.info(f"Retrying {len(missing_tickers)} missing/failed tickers...")
-                mt_list = list(missing_tickers)
-                done=0
-                total= len(mt_list)
-                batches = [mt_list[i:i+self.batch_size] for i in range(0,total,self.batch_size)]
+        if cached_data:
+            self.logger.info(f"Using cached data for {ds}")
+            raw_results = cached_data
+            if missing_data:
+                self.logger.info(f"{len(missing_data)} missing, attempting fill.")
+                missing_tickers = [m['ticker'] for m in missing_data]
+                done = 0
+                total = len(missing_tickers)
+                batches = [missing_tickers[i:i+self.batch_size] for i in range(0, total, self.batch_size)]
                 for b in batches:
                     hist = self.batch_download_history(b)
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
-                        fut2stk= {ex.submit(self.analyze_stock, st, hist.get(st)): st for st in b}
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(b))) as ex:
+                        fut2stk = {
+                            ex.submit(self.analyze_stock, st, hist.get(st)): st
+                            for st in b
+                        }
                         for fut in concurrent.futures.as_completed(fut2stk):
-                            stsym= fut2stk[fut]
-                            done+=1
+                            stsym = fut2stk[fut]
+                            done += 1
                             if progress_callback:
-                                val= 80+(done/total*20)
+                                val = 80 + (done/total * 20)
                                 progress_callback(val)
                             try:
-                                r= fut.result()
+                                r = fut.result()
                                 if r:
-                                    self.data_cache.update_missing_data(ds,e_stocks,r)
-                            except Exception as e:
-                                self.logger.error(f"Error updating {stsym}: {e}")
-                # Reload updated cache
-                cached_data, _, _= self.data_cache.get_data(ds, e_stocks)
-                raw_results= cached_data
-            else:
-                self.logger.info("No missing/failing tickers found in cache. Using existing data.")
+                                    self.data_cache.update_missing_data(ds, e_stocks, r)
+                            except Exception as e_:
+                                self.logger.error(f"Error updating {stsym}: {e_}")
+                cached_data, _ = self.data_cache.get_data(ds, e_stocks)
+                raw_results = cached_data
+            
             if progress_callback:
                 progress_callback(100)
             return raw_results
         
-        # No cache or cache expired => fresh fetch
-        self.logger.info(f"No valid cache found. Fresh scanning for {len(e_stocks)} tickers.")
-        recommended=[]
-        total_stocks= len(e_stocks)
-        done=0
-        batches= [e_stocks[i:i+self.batch_size] for i in range(0,total_stocks,self.batch_size)]
-        
+        recommended = []
+        total_stocks = len(e_stocks)
+        done = 0
+        batches = [e_stocks[i:i+self.batch_size] for i in range(0, total_stocks, self.batch_size)]
         for b in batches:
-            hist = self.batch_download_history(b)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(b))) as ex:
-                fut2stk= {ex.submit(self.analyze_stock, st, hist.get(st)): st for st in b}
+            hist_map = self.batch_download_history(b)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(b))) as ex:
+                fut2stk = {
+                    ex.submit(self.analyze_stock, st, hist_map.get(st)): st
+                    for st in b
+                }
                 for ft in concurrent.futures.as_completed(fut2stk):
-                    st= fut2stk[ft]
-                    done+=1
+                    st = fut2stk[ft]
+                    done += 1
                     if progress_callback:
-                        pc= (done/total_stocks*80)
+                        pc = (done/total_stocks * 80)
                         progress_callback(pc)
                     try:
-                        r= ft.result()
+                        r = ft.result()
                         if r:
                             recommended.append(r)
-                    except Exception as e:
-                        self.logger.error(f"Error processing future result: {e}")
+                    except Exception as e_:
+                        self.logger.error(f"Error processing future result: {e_}")
         
-        # Filter out any `None` results before sorting
-        recommended = [r for r in recommended if r is not None]
-
         recommended.sort(key=lambda x: (
-            x['recommendation']!='Recommended',
-            x['earnings_time']=='Unknown',
+            x['recommendation'] != 'Recommended',
+            x['earnings_time'] == 'Unknown',
             x['earnings_time'],
             x['ticker']
         ))
-        self.logger.info(f"Finished scanning. Found {len(recommended)} results. Saving to cache.")
-        self.data_cache.save_data(ds,e_stocks,recommended)
+        self.data_cache.save_data(ds, e_stocks, recommended)
         if progress_callback:
             progress_callback(100)
         return recommended
     
     def analyze_stock(self, ticker: str, history_data: Optional[pd.DataFrame] = None) -> Optional[Dict]:
-        """
-        Attempt to analyze a single ticker. 
-        If history_data is None or empty, we mark it as 'download_failed'.
-        If the ticker is OTC (exchange in {'PNK','Other OTC','OTC','GREY'}), skip it entirely.
-        """
         try:
-            # First, check the exchange—skip if it's OTC
             st2 = self.analyzer.get_ticker(ticker)
             exchange = st2.info.get('exchange', '')
-            # Common OTC identifiers
             otc_exchanges = {"PNK", "Other OTC", "OTC", "GREY"}
             if exchange in otc_exchanges:
                 self.logger.info(f"[SKIP] Ticker '{ticker}' is OTC (exchange='{exchange}').")
                 return None
             
             if history_data is None or history_data.empty:
-                # Mark as "failed" so we can re-try next run
-                self.logger.warning(f"History data missing for {ticker}; marking download_failed.")
-                return {
-                    'ticker': ticker,
-                    'download_failed': True,
-                    'recommendation': "Avoid",
-                    'earnings_time': self.calendar_fetcher.get_earnings_time(ticker),
-                }
+                hd = st2.history(period='3mo')
+                if not hd.empty:
+                    history_data = hd
+                else:
+                    self.logger.warning(f"No data for {ticker}; skipping.")
+                    return None
             
-            cp= history_data['Close'].iloc[-1]
-            voldata= history_data['Volume']
-            hv= self.analyzer.yang_zhang_volatility(history_data)
+            cp = history_data['Close'].iloc[-1]
+            voldata = history_data['Volume']
+            hv = self.analyzer.yang_zhang_volatility(history_data)
             tv = voldata.iloc[-1] if not voldata.empty else 0
             
             od = self.analyzer.compute_recommendation(ticker)
             if isinstance(od, dict) and "error" not in od:
-                avb= od['avg_volume']
-                ivcheck= od['iv30_rv30']>=1.25
-                slopecheck= od['term_slope']<=-0.00406
+                avb = od['avg_volume']
+                ivcheck = (od['iv30_rv30'] >= 1.25)
+                slopecheck = (od['term_slope'] <= -0.00406)
+                
                 if avb and ivcheck and slopecheck:
-                    rec="Recommended"
+                    rec = "Recommended"
                 elif slopecheck and ((avb and not ivcheck) or (ivcheck and not avb)):
-                    rec="Consider"
+                    rec = "Consider"
                 else:
-                    rec="Avoid"
+                    rec = "Avoid"
                 
                 return {
                     'ticker': ticker,
                     'current_price': cp,
-                    'market_cap': od.get('market_cap',0),
+                    'market_cap': st2.info.get('marketCap', 0),
                     'volume': tv,
                     'avg_volume': avb,
-                    'avg_volume_value': od.get('avg_volume_value',0),
+                    'avg_volume_value': od.get('avg_volume_value', 0),
                     'earnings_time': self.calendar_fetcher.get_earnings_time(ticker),
                     'recommendation': rec,
-                    'expected_move': od.get('expected_move','N/A'),
-                    'atr14': od.get('atr14',0),
-                    'atr14_pct': od.get('atr14_pct',0),
-                    'iv30_rv30': od.get('iv30_rv30',0),
-                    'term_slope': od.get('term_slope',0),
-                    'term_structure': od.get('term_structure',0),
+                    'expected_move': od.get('expected_move', 'N/A'),
+                    'atr14': od.get('atr14', 0),
+                    'atr14_pct': od.get('atr14_pct', 0),
+                    'iv30_rv30': od.get('iv30_rv30', 0),
+                    'term_slope': od.get('term_slope', 0),
+                    'term_structure': od.get('term_structure', 0),
                     'historical_volatility': hv,
-                    'current_iv': od.get('current_iv',None)
+                    'current_iv': od.get('current_iv', None)
                 }
-            # If there's an error from compute_recommendation
+            
             return {
                 'ticker': ticker,
                 'current_price': cp,
@@ -957,15 +938,14 @@ class EnhancedEarningsScanner:
             self.logger.error(f"Analyze error for {ticker}: {e}")
             return None
 
-
 # ====================== Candlestick Chart Function ======================
-def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager]=None):
+def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager] = None):
     try:
-        st= yf.Ticker(ticker)
+        st = yf.Ticker(ticker)
         if session_manager:
             st.session = session_manager.get_session()
         
-        hist= st.history(period='1y')
+        hist = st.history(period='1y')
         if hist.empty:
             messagebox.showerror("Error", f"No historical data for {ticker}.")
             return
@@ -974,7 +954,6 @@ def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager
     except Exception as e:
         messagebox.showerror("Chart Error", f"Error generating chart for {ticker}: {e}")
 
-
 # ====================== The Tkinter App ======================
 class EarningsTkApp:
     def __init__(self, root):
@@ -982,49 +961,54 @@ class EarningsTkApp:
         self.root.title("Earnings Volatility Calculator (Tkinter)")
 
         self.proxy_manager = ProxyManager()
-        self.analyzer= OptionsAnalyzer(self.proxy_manager)
-        self.scanner= EnhancedEarningsScanner(self.analyzer)
+        self.analyzer = OptionsAnalyzer(self.proxy_manager)
+        self.scanner = EnhancedEarningsScanner(self.analyzer)
 
         self.raw_results: List[Dict] = []
-        self.sort_orders= {}
+        self.sort_orders: Dict[str, bool] = {}
 
         self.build_layout()
+        # Automatically update OTC tickers in the background on startup
+        threading.Thread(target=update_otc_tickers, daemon=True).start()
 
     def build_layout(self):
         # ---------- Proxy Settings -----------
-        proxy_frame= ttk.LabelFrame(self.root, text="Proxy Settings", padding=2)
+        proxy_frame = ttk.LabelFrame(self.root, text="Proxy Settings", padding=2)
         proxy_frame.pack(side="top", fill="x", padx=5, pady=(2, 0))
 
-        self.proxy_var= tk.BooleanVar(value=False)
-        cb= ttk.Checkbutton(proxy_frame, text="Enable Proxy", variable=self.proxy_var, command=self.on_toggle_proxy)
+        self.proxy_var = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(proxy_frame, text="Enable Proxy",
+                             variable=self.proxy_var,
+                             command=self.on_toggle_proxy)
         cb.pack(side="left", padx=5, pady=0)
 
-        btn_proxy_update= ttk.Button(proxy_frame, text="Update Proxies", command=self.on_update_proxies)
+        btn_proxy_update = ttk.Button(proxy_frame, text="Update Proxies",
+                                      command=self.on_update_proxies)
         btn_proxy_update.pack(side="left", padx=5, pady=0)
 
-        self.lbl_proxy_status= ttk.Label(proxy_frame, text="Disabled (0 proxies)")
+        self.lbl_proxy_status = ttk.Label(proxy_frame, text="Disabled (0 proxies)")
         self.lbl_proxy_status.pack(side="left", padx=5, pady=0)
 
         # ---------- Single Stock Analysis -----------
-        single_frame= ttk.Frame(self.root, padding=2)
+        single_frame = ttk.Frame(self.root, padding=2)
         single_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
         ttk.Label(single_frame, text="Enter Stock Symbol:").pack(side="left", padx=5, pady=0)
-        self.entry_symbol= ttk.Entry(single_frame, width=12)
+        self.entry_symbol = ttk.Entry(single_frame, width=12)
         self.entry_symbol.pack(side="left", padx=5, pady=0)
 
-        btn_analyze= ttk.Button(single_frame, text="Analyze", command=self.on_analyze_stock)
+        btn_analyze = ttk.Button(single_frame, text="Analyze", command=self.on_analyze_stock)
         btn_analyze.pack(side="left", padx=5, pady=0)
 
         # ---------- Earnings Scan with tkcalendar -----------
-        scan_frame= ttk.Frame(self.root, padding=2)
+        scan_frame = ttk.Frame(self.root, padding=2)
         scan_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
         ttk.Label(scan_frame, text="Earnings Date:").pack(side="left", padx=5, pady=0)
-        self.cal_date= DateEntry(scan_frame, width=12, date_pattern='yyyy-MM-dd')
+        self.cal_date = DateEntry(scan_frame, width=12, date_pattern='yyyy-MM-dd')
         self.cal_date.pack(side="left", padx=5, pady=0)
 
-        btn_scan= ttk.Button(scan_frame, text="Scan Earnings", command=self.on_scan_earnings)
+        btn_scan = ttk.Button(scan_frame, text="Scan Earnings", command=self.on_scan_earnings)
         btn_scan.pack(side="left", padx=5, pady=0)
 
         # ============ Filters + Threshold Label =============
@@ -1032,22 +1016,22 @@ class EarningsTkApp:
         filter_and_threshold_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
         # ---------- Filters -----------
-        filter_frame= ttk.LabelFrame(filter_and_threshold_frame, text="", padding=2)
+        filter_frame = ttk.LabelFrame(filter_and_threshold_frame, text="", padding=2)
         filter_frame.pack(side="left", fill="x", expand=True)
 
         ttk.Label(filter_frame, text="Earnings Time Filter:").pack(side="left", padx=(0,5), pady=0)
-        self.filter_time_var= tk.StringVar(value="All")
-        cbox_time= ttk.Combobox(filter_frame, textvariable=self.filter_time_var,
-                                values=["All","Pre Market","Post Market","During Market"],
-                                width=12)
+        self.filter_time_var = tk.StringVar(value="All")
+        cbox_time = ttk.Combobox(filter_frame, textvariable=self.filter_time_var,
+                                 values=["All","Pre Market","Post Market","During Market"],
+                                 width=12)
         cbox_time.pack(side="left", padx=5, pady=0)
         cbox_time.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
         ttk.Label(filter_frame, text="Recommendation Filter:").pack(side="left", padx=(10,5), pady=0)
-        self.filter_rec_var= tk.StringVar(value="All")
-        cbox_rec= ttk.Combobox(filter_frame, textvariable=self.filter_rec_var,
-                               values=["All","Recommended","Consider","Avoid"],
-                               width=12)
+        self.filter_rec_var = tk.StringVar(value="All")
+        cbox_rec = ttk.Combobox(filter_frame, textvariable=self.filter_rec_var,
+                                values=["All","Recommended","Consider","Avoid"],
+                                width=12)
         cbox_rec.pack(side="left", padx=5, pady=0)
         cbox_rec.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
@@ -1058,32 +1042,29 @@ class EarningsTkApp:
             "- IV30/RV30 ≥ 1.25\n"
             "- Term Slope ≤ -0.00406"
         )
-        thresholds_label = ttk.Label(
-            filter_and_threshold_frame,
-            text=thresholds_text,
-            justify="left"
-        )
+        thresholds_label = ttk.Label(filter_and_threshold_frame, text=thresholds_text, justify="left")
         thresholds_label.pack(side="right", padx=(10, 5), pady=(0,0), anchor="n")
 
         # ---------- The Table -----------
-        table_frame= ttk.Frame(self.root, padding=0)
+        table_frame = ttk.Frame(self.root, padding=0)
         table_frame.pack(side="top", fill="both", expand=True)
 
-        self.headings= [
-            "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Vol Check", "30D Volume",
-            "Earnings Time", "Recommendation", "Expected Move", "ATR 14d", "ATR 14d %",
-            "IV30/RV30", "Term Slope", "Term Structure", "Historical Vol", "Current IV"
+        self.headings = [
+            "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Vol Check",
+            "30D Volume", "Earnings Time", "Recommendation", "Expected Move",
+            "ATR 14d", "ATR 14d %", "IV30/RV30", "Term Slope",
+            "Term Structure", "Historical Vol", "Current IV"
         ]
-        self.tree= ttk.Treeview(table_frame, columns=self.headings, show="headings")
+        self.tree = ttk.Treeview(table_frame, columns=self.headings, show="headings")
         self.tree.pack(side="left", fill="both", expand=True)
         
         for col in self.headings:
-            self.sort_orders[col]= True
+            self.sort_orders[col] = True
             self.tree.heading(col, text=col,
                               command=lambda c=col: self.on_column_heading_click(c))
             self.tree.column(col, width=100)
 
-        vsb= ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         vsb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=vsb.set)
 
@@ -1094,26 +1075,27 @@ class EarningsTkApp:
         self.tree.bind("<Double-1>", self.on_table_double_click)
 
         # ---------- Bottom Row (Status/Progress/Export/Exit) -----------
-        bottom_frame= ttk.Frame(self.root, padding=2)
+        bottom_frame = ttk.Frame(self.root, padding=2)
         bottom_frame.pack(side="bottom", fill="x", padx=5, pady=(0,2))
 
-        self.lbl_status= ttk.Label(bottom_frame, text="Status: Ready")
+        self.lbl_status = ttk.Label(bottom_frame, text="Status: Ready")
         self.lbl_status.pack(side="left", padx=5, pady=0)
 
-        btn_export= ttk.Button(bottom_frame, text="Export CSV", command=self.on_export_csv)
+        btn_export = ttk.Button(bottom_frame, text="Export CSV", command=self.on_export_csv)
         btn_export.pack(side="right", padx=5, pady=0)
 
-        btn_exit= ttk.Button(bottom_frame, text="Exit", command=self.root.destroy)
+        btn_exit = ttk.Button(bottom_frame, text="Exit", command=self.root.destroy)
         btn_exit.pack(side="right", padx=5, pady=0)
 
-        self.progress_var= tk.DoubleVar(value=0)
-        self.progress_bar= ttk.Progressbar(bottom_frame, orient="horizontal",
-                                           variable=self.progress_var, maximum=100, length=150)
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(bottom_frame, orient="horizontal",
+                                            variable=self.progress_var,
+                                            maximum=100, length=150)
         self.progress_bar.pack(side="right", padx=10, pady=0)
 
     # -------- Proxy Handlers --------
     def on_toggle_proxy(self):
-        self.proxy_manager.proxy_enabled= self.proxy_var.get()
+        self.proxy_manager.proxy_enabled = self.proxy_var.get()
         self.update_proxy_status()
 
     def on_update_proxies(self):
@@ -1126,14 +1108,14 @@ class EarningsTkApp:
 
     def update_proxy_status(self):
         if self.proxy_manager.proxy_enabled:
-            c= len(self.proxy_manager.proxies)
+            c = len(self.proxy_manager.proxies)
             self.lbl_proxy_status.config(text=f"Enabled ({c} proxies)")
         else:
             self.lbl_proxy_status.config(text="Disabled (0 proxies)")
 
     # -------- Single Stock Analysis --------
     def on_analyze_stock(self):
-        ticker= self.entry_symbol.get().strip().upper()
+        ticker = self.entry_symbol.get().strip().upper()
         if not ticker:
             self.set_status("Please enter a stock symbol.")
             return
@@ -1142,12 +1124,10 @@ class EarningsTkApp:
         self.raw_results.clear()
 
         def worker():
-            # We'll simulate a single batch download:
             hist_map = self.scanner.batch_download_history([ticker])
-            r= self.scanner.analyze_stock(ticker, hist_map.get(ticker))
-            # Only store if it's not None (i.e. not OTC or total fail)
+            r = self.scanner.analyze_stock(ticker, hist_map.get(ticker))
             if r:
-                self.raw_results= [r]
+                self.raw_results = [r]
             self.root.after(0, self.fill_table)
             self.set_status("Analysis complete.")
 
@@ -1155,7 +1135,7 @@ class EarningsTkApp:
 
     # -------- Earnings Scan --------
     def on_scan_earnings(self):
-        dt= self.cal_date.get_date()
+        dt = self.cal_date.get_date()
         self.clear_table()
         self.raw_results.clear()
         self.progress_var.set(0)
@@ -1165,8 +1145,8 @@ class EarningsTkApp:
             self.progress_var.set(val)
 
         def worker():
-            results= self.scanner.scan_earnings_stocks(dt, progress_cb)
-            self.raw_results= results
+            results = self.scanner.scan_earnings_stocks(dt, progress_cb)
+            self.raw_results = results
             self.set_status(f"Scan complete. Found {len(results)} stocks.")
             self.root.after(0, self.fill_table)
 
@@ -1177,15 +1157,15 @@ class EarningsTkApp:
         self.fill_table()
 
     def apply_filters(self, data: List[Dict]) -> List[Dict]:
-        time_val= self.filter_time_var.get()
-        rec_val= self.filter_rec_var.get()
-        filtered= []
+        time_val = self.filter_time_var.get()
+        rec_val = self.filter_rec_var.get()
+        filtered = []
         for row in data:
-            et= row.get('earnings_time',"Unknown")
-            if time_val!="All" and et!= time_val:
+            et = row.get('earnings_time', "Unknown")
+            if time_val != "All" and et != time_val:
                 continue
-            rv= row.get('recommendation',"Avoid")
-            if rec_val!="All" and rv!=rec_val:
+            rv = row.get('recommendation', "Avoid")
+            if rec_val != "All" and rv != rec_val:
                 continue
             filtered.append(row)
         return filtered
@@ -1193,10 +1173,10 @@ class EarningsTkApp:
     # -------- Table Helpers --------
     def fill_table(self):
         self.clear_table()
-        filtered= self.apply_filters(self.raw_results)
+        filtered = self.apply_filters(self.raw_results)
         for row in filtered:
-            rec= row.get('recommendation',"Avoid")
-            row_vals= self.build_row_values(row)
+            rec = row.get('recommendation', "Avoid")
+            row_vals = self.build_row_values(row)
             self.tree.insert("", "end", values=row_vals, tags=(rec,))
 
     def clear_table(self):
@@ -1205,36 +1185,30 @@ class EarningsTkApp:
 
     def build_row_values(self, row: Dict) -> List[str]:
         return [
-            row.get('ticker',"N/A"),
-            (f"${row.get('current_price',0):.2f}"
-             if 'current_price' in row else "N/A"),
-            (f"${row.get('market_cap',0):,}"
-             if row.get('market_cap',0) else "N/A"),
-            (f"{row.get('volume',0):,}"
-             if row.get('volume',0) else "N/A"),
+            row.get('ticker', "N/A"),
+            f"${row.get('current_price',0):.2f}",
+            (f"${row.get('market_cap',0):,}" if row.get('market_cap',0) else "N/A"),
+            (f"{row.get('volume',0):,}" if row.get('volume',0) else "N/A"),
             ("PASS" if row.get('avg_volume') else "FAIL"),
-            (f"{int(row.get('avg_volume_value',0)):,}"
-             if row.get('avg_volume_value',0) else "N/A"),
-            row.get('earnings_time',"Unknown"),
-            row.get('recommendation',"Avoid"),
-            row.get('expected_move',"N/A"),
+            (f"{int(row.get('avg_volume_value',0)):,}" if row.get('avg_volume_value',0) else "N/A"),
+            row.get('earnings_time', "Unknown"),
+            row.get('recommendation', "Avoid"),
+            row.get('expected_move', "N/A"),
             f"{row.get('atr14',0):.2f}",
             f"{row.get('atr14_pct',0):.2f}%",
             f"{row.get('iv30_rv30',0):.2f}",
             f"{row.get('term_slope',0):.4f}",
-            (f"{row.get('term_structure',0):.2%}"
-             if row.get('term_structure',0) else "N/A"),
+            (f"{row.get('term_structure',0):.2%}" if row.get('term_structure',0) else "N/A"),
             f"{row.get('historical_volatility',0):.2%}",
-            (f"{row.get('current_iv',0):.2%}"
-             if row.get('current_iv',0) else "N/A")
+            (f"{row.get('current_iv',0):.2%}" if row.get('current_iv',0) else "N/A")
         ]
 
     # -------- Sorting --------
     def on_column_heading_click(self, colname: str):
-        ascending= self.sort_orders[colname]
-        self.sort_orders[colname]= not ascending
+        ascending = self.sort_orders[colname]
+        self.sort_orders[colname] = not ascending
 
-        key_map= {
+        key_map = {
             "Ticker": "ticker",
             "Price": "current_price",
             "Market Cap": "market_cap",
@@ -1252,51 +1226,58 @@ class EarningsTkApp:
             "Historical Vol": "historical_volatility",
             "Current IV": "current_iv"
         }
-        data_key= key_map.get(colname, colname)
+        data_key = key_map.get(colname, colname)
         
         def transform_value(row: Dict):
-            val= row.get(data_key, 0)
+            val = row.get(data_key, 0)
             if isinstance(val, str):
-                txt = val.replace('%','').replace('$','').replace(',','')
-                try:
-                    return float(txt)
-                except:
-                    return val
+                if val.endswith('%'):
+                    try:
+                        return float(val[:-1])
+                    except:
+                        return val
+                if val.startswith('$'):
+                    try:
+                        return float(val.replace('$','').replace(',',''))
+                    except:
+                        return val
+                if val.replace(',','').isdigit():
+                    return float(val.replace(',',''))
             return val
 
         self.raw_results.sort(key=lambda r: transform_value(r), reverse=not ascending)
         self.fill_table()
-        adesc= "asc" if ascending else "desc"
+        adesc = "asc" if ascending else "desc"
         self.set_status(f"Sorted by {colname} ({adesc})")
 
     # -------- Double-Click => Chart --------
     def on_table_double_click(self, event):
-        sel= self.tree.selection()
+        sel = self.tree.selection()
         if not sel:
             return
-        item_id= sel[0]
-        row_vals= self.tree.item(item_id,"values")
+        item_id = sel[0]
+        row_vals = self.tree.item(item_id, "values")
         if not row_vals:
             return
-        ticker= row_vals[0]
+        ticker = row_vals[0]
         show_interactive_chart(ticker, self.analyzer.session_manager)
 
     # -------- Export CSV --------
     def on_export_csv(self):
-        filtered= self.apply_filters(self.raw_results)
+        filtered = self.apply_filters(self.raw_results)
         if not filtered:
             self.set_status("No data to export.")
             return
-        f= filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")])
+        f = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")])
         if not f:
             return
         try:
             import csv
-            with open(f,'w', newline='') as out:
-                writer= csv.writer(out)
+            with open(f, 'w', newline='') as out:
+                writer = csv.writer(out)
                 writer.writerow(self.headings)
                 for row in filtered:
-                    rv= self.build_row_values(row)
+                    rv = self.build_row_values(row)
                     writer.writerow(rv)
             self.set_status(f"Exported to {f}")
         except Exception as e:
@@ -1306,10 +1287,10 @@ class EarningsTkApp:
     def set_status(self, msg: str):
         self.lbl_status.config(text=f"Status: {msg}")
 
-
+# ====================== Main Function ======================
 def main():
-    root= tk.Tk()
-    app= EarningsTkApp(root)
+    root = tk.Tk()
+    app = EarningsTkApp(root)
     root.mainloop()
 
 if __name__=="__main__":
