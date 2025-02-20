@@ -1,20 +1,3 @@
-"""
-Earnings Volatility Calculator (Tkinter-based)
----------------------------------------------
-Features:
-  - Proxy toggling & fetching
-  - Single-stock "Analyze"
-  - "Scan Earnings" for chosen date (uses a calendar widget from tkcalendar)
-  - Table with clickable column headings for sorting
-  - Row coloring based on recommendation (Recommended=green, Consider=orange, Avoid=red)
-  - Two filters: (1) Earnings Time, (2) Recommendation
-  - Double-click table row to see candlestick chart
-  - Export table data to CSV
-
-Dependencies:
-  pip install requests yfinance pandas numpy beautifulsoup4 matplotlib tkcalendar
-"""
-
 import os
 import random
 import logging
@@ -34,7 +17,6 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 from typing import Dict, List, Optional, Tuple
 
-# Tkinter + tkcalendar imports
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -46,14 +28,12 @@ except ImportError:
     raise SystemExit
 
 import matplotlib
-matplotlib.use("TkAgg")  # So that Matplotlib works inside Tk
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
-
 # ====================== ProxyManager ======================
 class ProxyManager:
-    """Manages proxy connections and rotation from multiple free sources."""
     def __init__(self):
         self.proxies: List[Dict[str, str]] = []
         self.current_proxy: Optional[Dict[str, str]] = None
@@ -72,7 +52,8 @@ class ProxyManager:
     
     def fetch_proxyscrape(self) -> List[Dict[str, str]]:
         try:
-            url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
+            url = ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000"
+                   "&country=all&ssl=all&anonymity=all")
             resp = requests.get(url, timeout=15)
             if resp.status_code == 200:
                 lines = [x.strip() for x in resp.text.split('\n') if x.strip()]
@@ -141,7 +122,7 @@ class ProxyManager:
                 proxies = []
                 for r in rows:
                     cols = r.find_all('td')
-                    if len(cols)>=2:
+                    if len(cols) >= 2:
                         ip = cols[0].text.strip()
                         port = cols[1].text.strip()
                         proxies.append({'http': f"http://{ip}:{port}", 'https': f"http://{ip}:{port}"})
@@ -152,7 +133,6 @@ class ProxyManager:
             return []
     
     def fetch_proxies(self) -> None:
-        """Concurrent fetch from multiple sources, then remove duplicates."""
         import concurrent.futures
         all_proxies = []
         sources = [
@@ -183,16 +163,16 @@ class ProxyManager:
         self.proxies = unique
         self.logger.info(f"Total unique proxies: {len(self.proxies)}")
     
-    def get_proxy(self) -> Optional[Dict[str, str]]:
+    def get_proxy(self):
         if not self.proxy_enabled or not self.proxies:
             return None
         self.current_proxy = random.choice(self.proxies)
         return self.current_proxy
     
-    def rotate_proxy(self) -> Optional[Dict[str, str]]:
-        if not self.proxy_enabled or len(self.proxies)<=1:
+    def rotate_proxy(self):
+        if not self.proxy_enabled or len(self.proxies) <= 1:
             return None
-        av = [p for p in self.proxies if p!=self.current_proxy]
+        av = [p for p in self.proxies if p != self.current_proxy]
         if av:
             self.current_proxy = random.choice(av)
             return self.current_proxy
@@ -209,7 +189,8 @@ class SessionManager:
         s = requests.Session()
         if self.proxy_manager.proxy_enabled:
             p = self.proxy_manager.get_proxy()
-            if p: s.proxies.update(p)
+            if p:
+                s.proxies.update(p)
         return s
     
     def rotate_session(self):
@@ -268,11 +249,11 @@ class OptionsAnalyzer:
         sdates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
         arr = []
         for i,d in enumerate(sdates):
-            if d>=cutoff:
+            if d >= cutoff:
                 arr = [x.strftime("%Y-%m-%d") for x in sdates[:i+1]]
                 break
         if arr:
-            if arr[0]==today.strftime("%Y-%m-%d"):
+            if arr[0] == today.strftime("%Y-%m-%d"):
                 return arr[1:]
             return arr
         raise ValueError("No date 45+ days out found.")
@@ -321,9 +302,9 @@ class OptionsAnalyzer:
             da, va = da[idx], va[idx]
             f = interp1d(da, va, kind='linear', fill_value="extrapolate")
             def tspline(dte):
-                if dte<da[0]:
+                if dte < da[0]:
                     return float(va[0])
-                elif dte>da[-1]:
+                elif dte > da[-1]:
                     return float(va[-1])
                 else:
                     return float(f(dte))
@@ -336,10 +317,11 @@ class OptionsAnalyzer:
         for attempt in range(3):
             try:
                 td = ticker.history(period='1d')
-                if td.empty: raise ValueError("No price data for 1d.")
+                if td.empty:
+                    raise ValueError("No price data for 1d.")
                 return td['Close'].iloc[-1]
             except Exception as e:
-                if attempt<2:
+                if attempt < 2:
                     self.logger.warning(f"Failed to get price: {e}. Rotating proxy.")
                     self.session_manager.rotate_session()
                     ticker.session = self.session_manager.get_session()
@@ -348,9 +330,9 @@ class OptionsAnalyzer:
     
     def compute_recommendation(self, symbol: str)->Dict:
         """
-        Conditions:
-         - 30-day avg volume >=1,500,000
-         - IV30/RV30 >=1.25
+        Conditions for "Recommended":
+         - 30-day avg volume >= 1,500,000
+         - IV30/RV30 >= 1.25
          - Term slope <= -0.00406
         """
         for attempt in range(3):
@@ -383,7 +365,8 @@ class OptionsAnalyzer:
                 i=0
                 for e,chain in oc.items():
                     calls, puts = chain.calls, chain.puts
-                    if calls.empty or puts.empty: continue
+                    if calls.empty or puts.empty: 
+                        continue
                     call_idx = (calls['strike']-up).abs().idxmin()
                     put_idx = (puts['strike']-up).abs().idxmin()
                     civ = calls.loc[call_idx,'impliedVolatility']
@@ -402,7 +385,6 @@ class OptionsAnalyzer:
                 if not atm_ivs:
                     return {"error":"No ATM IV found."}
                 
-                # build term structure
                 nowd = datetime.today().date()
                 ds, vs = [],[]
                 for exp,iv in atm_ivs.items():
@@ -435,7 +417,13 @@ class OptionsAnalyzer:
                     at14= tr.rolling(14).mean().iloc[-1]
                 else:
                     at14=0
-                
+
+                # ATR14 as percentage (relative to current close 'up')
+                if up != 0:
+                    at14_pct = (at14 / up) * 100.0
+                else:
+                    at14_pct = 0
+
                 mc = t.info.get('marketCap',0)
                 if stprice and up!=0:
                     exmo= f"{round(stprice/up*100,2)}%"
@@ -453,10 +441,10 @@ class OptionsAnalyzer:
                     'historical_volatility': hv,
                     'current_iv': fi_iv,
                     'atr14': at14,
+                    'atr14_pct': at14_pct,  # <--- NEW FIELD
                     'market_cap': mc,
                     'volume': tv
                 }
-            
             except Exception as e:
                 if attempt<2:
                     self.logger.warning(f"Attempt {attempt} for {symbol} failed: {e}. Rotating proxy.")
@@ -468,7 +456,6 @@ class OptionsAnalyzer:
 
 # ====================== EarningsCalendarFetcher ======================
 class EarningsCalendarFetcher:
-    """Fetch earnings data from investing.com"""
     def __init__(self, proxy_manager=None):
         self.data_queue = Queue()
         self.earnings_times={}
@@ -490,7 +477,6 @@ class EarningsCalendarFetcher:
         max_retries = 3
         attempt = 0
         ret = []
-
         while attempt < max_retries:
             try:
                 self.logger.info(f"Fetching earnings for {date}")
@@ -502,7 +488,7 @@ class EarningsCalendarFetcher:
                     'Referer': 'https://www.investing.com/earnings-calendar/'
                 }
                 pl = {
-                    'country[]': '5',       # US
+                    'country[]': '5',
                     'dateFrom': date,
                     'dateTo': date,
                     'currentTab': 'custom',
@@ -517,31 +503,24 @@ class EarningsCalendarFetcher:
                 self.earnings_times.clear()
 
                 for row in rows:
-                    # Look for the company name span or other identifying HTML:
                     if not row.find('span', class_='earnCalCompanyName'):
                         continue
                     try:
                         ticker = row.find('a', class_='bold').text.strip()
                         timing_span = row.find('span', class_='genToolTip')
-
-                        # Default assumption:
-                        timing = "During Market"
-
-                        # Check if there's a data-tooltip attribute:
+                        timing = "During Market"  # default
                         if timing_span and 'data-tooltip' in timing_span.attrs:
                             tip = timing_span['data-tooltip']
                             if tip == 'Before market open':
                                 timing = 'Pre Market'
                             elif tip == 'After market close':
                                 timing = 'Post Market'
-
                         self.earnings_times[ticker] = timing
                         ret.append(ticker)
                     except Exception as e:
                         self.logger.warning(f"Error parsing row: {e}")
                         continue
 
-                # <-- Only return *after* processing all rows
                 self.logger.info(f"Found {len(ret)} tickers for date {date}")
                 return ret
 
@@ -553,7 +532,6 @@ class EarningsCalendarFetcher:
                 else:
                     self.logger.error(f"All attempts failed: {e}")
                     return []
-
         return ret
         
     def get_earnings_time(self, ticker: str)->str:
@@ -562,7 +540,6 @@ class EarningsCalendarFetcher:
 
 # ====================== DataCache ======================
 class DataCache:
-    """Simple persistent cache for stock data (pickled)."""
     def __init__(self, cache_dir="stock_cache"):
         self.cache_dir=cache_dir
         self.cache_expiry_days=7
@@ -632,7 +609,8 @@ class DataCache:
     def get_data(self, date: str, tickers: List[str])->Tuple[Optional[List[Dict]], List[Dict]]:
         ck = self._get_cache_key(date,tickers)
         cp = self._get_cache_path(ck)
-        if not os.path.exists(cp): return None,[]
+        if not os.path.exists(cp):
+            return None,[]
         try:
             with open(cp,'rb') as f:
                 c= pickle.load(f)
@@ -732,7 +710,6 @@ class EnhancedEarningsScanner:
         if not e_stocks:
             return []
         cd,md= self.data_cache.get_data(ds,e_stocks)
-        global raw_results
         
         if cd:
             self.logger.info(f"Using cached data for {ds}")
@@ -795,7 +772,6 @@ class EnhancedEarningsScanner:
             x['ticker']
         ))
         self.data_cache.save_data(ds,e_stocks,recommended)
-        raw_results= recommended
         if progress_callback:
             progress_callback(100)
         return recommended
@@ -839,6 +815,7 @@ class EnhancedEarningsScanner:
                     'recommendation': rec,
                     'expected_move': od.get('expected_move','N/A'),
                     'atr14': od.get('atr14',0),
+                    'atr14_pct': od.get('atr14_pct',0),  # <--- ATR % included here
                     'iv30_rv30': od.get('iv30_rv30',0),
                     'term_slope': od.get('term_slope',0),
                     'term_structure': od.get('term_structure',0),
@@ -856,6 +833,7 @@ class EnhancedEarningsScanner:
                 'recommendation': "Avoid",
                 'expected_move': "N/A",
                 'atr14': 0,
+                'atr14_pct': 0,
                 'iv30_rv30': 0,
                 'term_slope': 0,
                 'term_structure': 0,
@@ -869,7 +847,6 @@ class EnhancedEarningsScanner:
 
 # ====================== Candlestick Chart Function ======================
 def show_interactive_chart(ticker: str, session_manager: Optional[SessionManager]=None):
-    """Open a Matplotlib candlestick chart for the given ticker (1y history)."""
     try:
         st= yf.Ticker(ticker)
         if session_manager:
@@ -895,86 +872,101 @@ class EarningsTkApp:
         self.analyzer= OptionsAnalyzer(self.proxy_manager)
         self.scanner= EnhancedEarningsScanner(self.analyzer)
 
-        # Internal data
         self.raw_results: List[Dict] = []
-        self.sort_orders= {}  # track ascending/descending by column
+        self.sort_orders= {}
 
         self.build_layout()
 
     def build_layout(self):
-        # ---------- Proxy Settings ----------
-        proxy_frame= ttk.LabelFrame(self.root, text="Proxy Settings", padding=5)
-        proxy_frame.pack(side="top", fill="x", padx=5, pady=5)
+        # ---------- Proxy Settings -----------
+        proxy_frame= ttk.LabelFrame(self.root, text="Proxy Settings", padding=2)
+        proxy_frame.pack(side="top", fill="x", padx=5, pady=(2, 0))
 
         self.proxy_var= tk.BooleanVar(value=False)
         cb= ttk.Checkbutton(proxy_frame, text="Enable Proxy", variable=self.proxy_var, command=self.on_toggle_proxy)
-        cb.pack(side="left", padx=5)
+        cb.pack(side="left", padx=5, pady=0)
 
         btn_proxy_update= ttk.Button(proxy_frame, text="Update Proxies", command=self.on_update_proxies)
-        btn_proxy_update.pack(side="left", padx=5)
+        btn_proxy_update.pack(side="left", padx=5, pady=0)
 
         self.lbl_proxy_status= ttk.Label(proxy_frame, text="Disabled (0 proxies)")
-        self.lbl_proxy_status.pack(side="left", padx=5)
+        self.lbl_proxy_status.pack(side="left", padx=5, pady=0)
 
-        # ---------- Single Stock Analysis ----------
-        single_frame= ttk.Frame(self.root, padding=5)
-        single_frame.pack(side="top", fill="x")
+        # ---------- Single Stock Analysis -----------
+        single_frame= ttk.Frame(self.root, padding=2)
+        single_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
-        ttk.Label(single_frame, text="Enter Stock Symbol:").pack(side="left", padx=5)
+        ttk.Label(single_frame, text="Enter Stock Symbol:").pack(side="left", padx=5, pady=0)
         self.entry_symbol= ttk.Entry(single_frame, width=12)
-        self.entry_symbol.pack(side="left", padx=5)
+        self.entry_symbol.pack(side="left", padx=5, pady=0)
 
         btn_analyze= ttk.Button(single_frame, text="Analyze", command=self.on_analyze_stock)
-        btn_analyze.pack(side="left", padx=5)
+        btn_analyze.pack(side="left", padx=5, pady=0)
 
-        # ---------- Earnings Scan with tkcalendar ----------
-        scan_frame= ttk.Frame(self.root, padding=5)
-        scan_frame.pack(side="top", fill="x")
+        # ---------- Earnings Scan with tkcalendar -----------
+        scan_frame= ttk.Frame(self.root, padding=2)
+        scan_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
-        ttk.Label(scan_frame, text="Earnings Date:").pack(side="left", padx=5)
-
-        # Use tkcalendar's DateEntry
+        ttk.Label(scan_frame, text="Earnings Date:").pack(side="left", padx=5, pady=0)
         self.cal_date= DateEntry(scan_frame, width=12, date_pattern='yyyy-MM-dd')
-        self.cal_date.pack(side="left", padx=5)
+        self.cal_date.pack(side="left", padx=5, pady=0)
 
         btn_scan= ttk.Button(scan_frame, text="Scan Earnings", command=self.on_scan_earnings)
-        btn_scan.pack(side="left", padx=5)
+        btn_scan.pack(side="left", padx=5, pady=0)
 
-        # ---------- Filters (Earnings Time + Recommendation) ----------
-        filter_frame= ttk.LabelFrame(self.root, text="Filters", padding=5)
-        filter_frame.pack(side="top", fill="x", padx=5, pady=5)
+        # ============ Filters + Threshold Label =============
+        filter_and_threshold_frame = ttk.Frame(self.root, padding=2)
+        filter_and_threshold_frame.pack(side="top", fill="x", padx=5, pady=(0,0))
 
-        ttk.Label(filter_frame, text="Earnings Time Filter:").pack(side="left", padx=(0,5))
+        # ---------- Filters -----------
+        filter_frame= ttk.LabelFrame(filter_and_threshold_frame, text="", padding=2)
+        filter_frame.pack(side="left", fill="x", expand=True)
+
+        ttk.Label(filter_frame, text="Earnings Time Filter:").pack(side="left", padx=(0,5), pady=0)
         self.filter_time_var= tk.StringVar(value="All")
         cbox_time= ttk.Combobox(filter_frame, textvariable=self.filter_time_var,
                                 values=["All","Pre Market","Post Market","During Market"],
                                 width=12)
-        cbox_time.pack(side="left", padx=5)
+        cbox_time.pack(side="left", padx=5, pady=0)
         cbox_time.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
-        ttk.Label(filter_frame, text="Recommendation Filter:").pack(side="left", padx=(10,5))
+        ttk.Label(filter_frame, text="Recommendation Filter:").pack(side="left", padx=(10,5), pady=0)
         self.filter_rec_var= tk.StringVar(value="All")
         cbox_rec= ttk.Combobox(filter_frame, textvariable=self.filter_rec_var,
                                values=["All","Recommended","Consider","Avoid"],
                                width=12)
-        cbox_rec.pack(side="left", padx=5)
+        cbox_rec.pack(side="left", padx=5, pady=0)
         cbox_rec.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
-        # ---------- The Table ----------
-        table_frame= ttk.Frame(self.root)
+        # ---------- Thresholds Label on the right ----------
+        thresholds_text = (
+            "Recommended If:\n"
+            "- Avg. Daily Volume ≥ 1,500,000\n"
+            "- IV30/RV30 ≥ 1.25\n"
+            "- Term Slope ≤ -0.00406"
+        )
+        thresholds_label = ttk.Label(
+            filter_and_threshold_frame,
+            text=thresholds_text,
+            justify="left"
+        )
+        thresholds_label.pack(side="right", padx=(10, 5), pady=(0,0), anchor="n")
+
+        # ---------- The Table -----------
+        table_frame= ttk.Frame(self.root, padding=0)
         table_frame.pack(side="top", fill="both", expand=True)
 
+        # -- Updated: Added "ATR 14d %" column --
         self.headings= [
             "Ticker", "Price", "Market Cap", "Volume 1d", "Avg Vol Check", "30D Volume",
-            "Earnings Time", "Recommendation", "Expected Move", "ATR 14d",
+            "Earnings Time", "Recommendation", "Expected Move", "ATR 14d", "ATR 14d %",
             "IV30/RV30", "Term Slope", "Term Structure", "Historical Vol", "Current IV"
         ]
         self.tree= ttk.Treeview(table_frame, columns=self.headings, show="headings")
         self.tree.pack(side="left", fill="both", expand=True)
         
         for col in self.headings:
-            self.sort_orders[col]= True  # default ascending
-            # define the heading with a command so that clicking the heading sorts by that column
+            self.sort_orders[col]= True
             self.tree.heading(col, text=col,
                               command=lambda c=col: self.on_column_heading_click(c))
             self.tree.column(col, width=100)
@@ -983,34 +975,31 @@ class EarningsTkApp:
         vsb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=vsb.set)
 
-        # Tag configs for coloring rows
-        # recommended= green+white, consider= orange+black, avoid= red+white
         self.tree.tag_configure("Recommended", background="green", foreground="white")
         self.tree.tag_configure("Consider", background="orange", foreground="black")
         self.tree.tag_configure("Avoid", background="red", foreground="white")
 
-        # Double-click row => candlestick chart
         self.tree.bind("<Double-1>", self.on_table_double_click)
 
-        # ---------- Bottom Row with Status + Progress + Export + Exit ----------
-        bottom_frame= ttk.Frame(self.root, padding=5)
-        bottom_frame.pack(side="bottom", fill="x")
+        # ---------- Bottom Row (Status/Progress/Export/Exit) -----------
+        bottom_frame= ttk.Frame(self.root, padding=2)
+        bottom_frame.pack(side="bottom", fill="x", padx=5, pady=(0,2))
 
         self.lbl_status= ttk.Label(bottom_frame, text="Status: Ready")
-        self.lbl_status.pack(side="left", padx=5)
+        self.lbl_status.pack(side="left", padx=5, pady=0)
 
         btn_export= ttk.Button(bottom_frame, text="Export CSV", command=self.on_export_csv)
-        btn_export.pack(side="right", padx=5)
+        btn_export.pack(side="right", padx=5, pady=0)
 
         btn_exit= ttk.Button(bottom_frame, text="Exit", command=self.root.destroy)
-        btn_exit.pack(side="right", padx=5)
+        btn_exit.pack(side="right", padx=5, pady=0)
 
         self.progress_var= tk.DoubleVar(value=0)
         self.progress_bar= ttk.Progressbar(bottom_frame, orient="horizontal",
                                            variable=self.progress_var, maximum=100, length=150)
-        self.progress_bar.pack(side="right", padx=10)
+        self.progress_bar.pack(side="right", padx=10, pady=0)
 
-    # ~~~~~~~~~~~~~~ Proxy Handlers ~~~~~~~~~~~~~~
+    # -------- Proxy Handlers --------
     def on_toggle_proxy(self):
         self.proxy_manager.proxy_enabled= self.proxy_var.get()
         self.update_proxy_status()
@@ -1030,7 +1019,7 @@ class EarningsTkApp:
         else:
             self.lbl_proxy_status.config(text="Disabled (0 proxies)")
 
-    # ~~~~~~~~~~~~~~ Single Stock Analysis ~~~~~~~~~~~~~~
+    # -------- Single Stock Analysis --------
     def on_analyze_stock(self):
         ticker= self.entry_symbol.get().strip().upper()
         if not ticker:
@@ -1048,10 +1037,9 @@ class EarningsTkApp:
         
         threading.Thread(target=worker, daemon=True).start()
 
-    # ~~~~~~~~~~~~~~ Earnings Scan ~~~~~~~~~~~~~~
+    # -------- Earnings Scan --------
     def on_scan_earnings(self):
-        # get date from DateEntry (tkcalendar)
-        dt= self.cal_date.get_date()  # returns a datetime.date
+        dt= self.cal_date.get_date()
         self.clear_table()
         self.raw_results.clear()
         self.progress_var.set(0)
@@ -1068,39 +1056,31 @@ class EarningsTkApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ~~~~~~~~~~~~~~ Filters ~~~~~~~~~~~~~~
+    # -------- Filters --------
     def on_filter_changed(self, event):
-        self.fill_table()  # reapply filters with the updated combos
+        self.fill_table()
 
     def apply_filters(self, data: List[Dict]) -> List[Dict]:
-        # apply Earnings Time filter + Recommendation filter
         time_val= self.filter_time_var.get()
         rec_val= self.filter_rec_var.get()
-
         filtered= []
         for row in data:
-            # 1) filter by earnings time
             et= row.get('earnings_time',"Unknown")
             if time_val!="All" and et!= time_val:
                 continue
-            # 2) filter by recommendation
             rv= row.get('recommendation',"Avoid")
             if rec_val!="All" and rv!=rec_val:
                 continue
             filtered.append(row)
         return filtered
 
-    # ~~~~~~~~~~~~~~ Table Helpers ~~~~~~~~~~~~~~
+    # -------- Table Helpers --------
     def fill_table(self):
         self.clear_table()
-        # apply filters
         filtered= self.apply_filters(self.raw_results)
-
-        # add rows with coloring based on recommendation
         for row in filtered:
             rec= row.get('recommendation',"Avoid")
             row_vals= self.build_row_values(row)
-            # insert row with that tag => color
             self.tree.insert("", "end", values=row_vals, tags=(rec,))
 
     def clear_table(self):
@@ -1108,7 +1088,9 @@ class EarningsTkApp:
             self.tree.delete(iid)
 
     def build_row_values(self, row: Dict) -> List[str]:
-        """Return a 15-item list of strings, matching self.headings."""
+        """
+        Adds a new column for the 14-day ATR as a percentage ('ATR 14d %').
+        """
         return [
             row.get('ticker',"N/A"),
             f"${row.get('current_price',0):.2f}",
@@ -1120,6 +1102,7 @@ class EarningsTkApp:
             row.get('recommendation',"Avoid"),
             row.get('expected_move',"N/A"),
             f"{row.get('atr14',0):.2f}",
+            f"{row.get('atr14_pct',0):.2f}%",  # <--- display ATR14% here
             f"{row.get('iv30_rv30',0):.2f}",
             f"{row.get('term_slope',0):.4f}",
             (f"{row.get('term_structure',0):.2%}" if row.get('term_structure',0) else "N/A"),
@@ -1127,13 +1110,11 @@ class EarningsTkApp:
             (f"{row.get('current_iv',0):.2%}" if row.get('current_iv',0) else "N/A")
         ]
 
-    # ~~~~~~~~~~~~~~ Sorting by Heading Click ~~~~~~~~~~~~~~
+    # -------- Sorting --------
     def on_column_heading_click(self, colname: str):
-        # toggle ascending/descending
         ascending= self.sort_orders[colname]
         self.sort_orders[colname]= not ascending
 
-        # convert heading -> data key
         key_map= {
             "Ticker": "ticker",
             "Price": "current_price",
@@ -1145,6 +1126,7 @@ class EarningsTkApp:
             "Recommendation": "recommendation",
             "Expected Move": "expected_move",
             "ATR 14d": "atr14",
+            "ATR 14d %": "atr14_pct",
             "IV30/RV30": "iv30_rv30",
             "Term Slope": "term_slope",
             "Term Structure": "term_structure",
@@ -1156,9 +1138,9 @@ class EarningsTkApp:
         def transform_value(row: Dict):
             val= row.get(data_key, 0)
             if isinstance(val, str):
-                # e.g. "4.23%", or "$120"
                 if val.endswith('%'):
                     try:
+                        # strip '%' and convert to float
                         return float(val[:-1])
                     except:
                         return val
@@ -1176,26 +1158,27 @@ class EarningsTkApp:
         adesc= "asc" if ascending else "desc"
         self.set_status(f"Sorted by {colname} ({adesc})")
 
-    # ~~~~~~~~~~~~~~ Double-Click => Chart ~~~~~~~~~~~~~~
+    # -------- Double-Click => Chart --------
     def on_table_double_click(self, event):
         sel= self.tree.selection()
-        if not sel: return
+        if not sel:
+            return
         item_id= sel[0]
         row_vals= self.tree.item(item_id,"values")
-        if not row_vals: return
-        ticker= row_vals[0]  # first column is ticker
+        if not row_vals:
+            return
+        ticker= row_vals[0]
         show_interactive_chart(ticker, self.analyzer.session_manager)
 
-    # ~~~~~~~~~~~~~~ Export CSV ~~~~~~~~~~~~~~
+    # -------- Export CSV --------
     def on_export_csv(self):
-        # filtered data (not the entire raw set)
         filtered= self.apply_filters(self.raw_results)
         if not filtered:
             self.set_status("No data to export.")
             return
-        
         f= filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")])
-        if not f: return
+        if not f:
+            return
         try:
             import csv
             with open(f,'w', newline='') as out:
@@ -1208,7 +1191,7 @@ class EarningsTkApp:
         except Exception as e:
             self.set_status(f"Export error: {e}")
 
-    # ~~~~~~~~~~~~~~ Helper ~~~~~~~~~~~~~~
+    # -------- Helper --------
     def set_status(self, msg: str):
         self.lbl_status.config(text=f"Status: {msg}")
 
