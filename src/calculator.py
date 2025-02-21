@@ -780,31 +780,32 @@ class EnhancedEarningsScanner:
         results = {}
         if not tickers:
             return results
-        ticker_str = " ".join(tickers)
         try:
             data = yf.download(
-                tickers=ticker_str,
+                tickers=tickers,
                 period="3mo",
-                group_by='ticker',
                 auto_adjust=True,
                 prepost=True,
                 threads=True,
                 proxy=self.analyzer.session_manager.get_session().proxies
             )
-            if len(tickers) == 1:
+            # Check if the returned DataFrame has a MultiIndex.
+            if isinstance(data.columns, pd.MultiIndex):
+                for tk in tickers:
+                    try:
+                        df = data.xs(tk, axis=1, level=0)
+                        if not df.empty:
+                            results[tk] = df
+                    except KeyError:
+                        self.logger.warning(f"No data returned for {tk}.")
+            else:
+                # Single ticker case – data is not multi-indexed.
                 if not data.empty:
                     results[tickers[0]] = data
-                return results
-            for tk in tickers:
-                try:
-                    df = data.xs(tk, axis=1, level=0)
-                    if not df.empty:
-                        results[tk] = df
-                except KeyError:
-                    self.logger.warning(f"No data returned for {tk}.")
+            return results
         except Exception as e:
             self.logger.error(f"batch_download_history error: {e}")
-        return results
+            return results
     
     def scan_earnings_stocks(self, date: datetime, progress_callback=None) -> List[Dict]:
         ds = date.strftime('%Y-%m-%d')
@@ -893,11 +894,13 @@ class EnhancedEarningsScanner:
                     return None
             if history_data is None or history_data.empty:
                 hd = st2.history(period='3mo')
-                if not hd.empty:
-                    history_data = hd
-                else:
+                if hd.empty:
+                    # Fallback to 1mo if 3mo returns empty.
+                    hd = st2.history(period='1mo')
+                if hd.empty:
                     self.logger.warning(f"No data for {ticker}; skipping.")
                     return None
+                history_data = hd
             if 'Close' in history_data.columns:
                 cp = history_data['Close'].iloc[-1]
             elif 'Adj Close' in history_data.columns:
