@@ -18,7 +18,7 @@ import threading
 import concurrent.futures
 from queue import Queue
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 
 import requests
 import pandas as pd
@@ -108,11 +108,12 @@ class ProxyManager:
         if not self.logger.handlers:
             fh = logging.FileHandler('proxy_manager_debug.log')
             fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)
         add_console_logging(self.logger, level=logging.INFO)
     
+    # ----- Fetching Proxies from Multiple Sources -----
     def fetch_proxyscrape(self) -> List[Dict[str, str]]:
         try:
             url = ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000"
@@ -195,8 +196,31 @@ class ProxyManager:
             self.logger.error(f"Error from Spys.one: {e}")
             return []
     
-    def fetch_proxies(self) -> None:
-        all_proxies = []
+    # ----- Parallel Proxy Validation with Feedback -----
+    def validate_proxy(self, proxy: Dict[str, str], timeout=3) -> bool:
+        """
+        Quickly test a proxy by calling httpbin.org/ip.
+        Returns True if successful within timeout; else False.
+        """
+        test_url = "https://httpbin.org/ip"
+        try:
+            resp = requests.get(test_url, proxies=proxy, timeout=timeout)
+            if resp.status_code == 200:
+                reported_ip = resp.json().get("origin", "")
+                proxy_ip = proxy['http'].split("//")[-1].split(":")[0]
+                if proxy_ip in reported_ip:
+                    return True
+        except Exception:
+            return False
+        return False
+    
+    def build_valid_proxy_pool(self, max_proxies=50, concurrency=20, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """
+        Fetch candidate proxies and validate them in parallel.
+        Only working proxies are kept in self.proxies.
+        The progress_callback (if provided) receives status messages.
+        """
+        candidates = []
         sources = [
             self.fetch_proxyscrape,
             self.fetch_geonode,
@@ -204,25 +228,43 @@ class ProxyManager:
             self.fetch_proxylist_download,
             self.fetch_spys_one
         ]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as exe:
-            future_to_src = {exe.submit(fn): fn.__name__ for fn in sources}
-            for fut in concurrent.futures.as_completed(future_to_src):
-                name = future_to_src[fut]
+        for src in sources:
+            src_candidates = src()
+            candidates.extend(src_candidates)
+            msg = f"Fetched {len(src_candidates)} from {src.__name__}"
+            self.logger.info(msg)
+            if progress_callback:
+                progress_callback(msg)
+        # Remove duplicates
+        candidates = list({p['http']: p for p in candidates}.values())
+        msg = f"{len(candidates)} unique candidate proxies after deduplication."
+        self.logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
+        self.logger.info("Starting parallel validation...")
+        if progress_callback:
+            progress_callback("Starting parallel validation of proxies...")
+        valid = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            future_to_proxy = {executor.submit(self.validate_proxy, p): p for p in candidates}
+            for future in concurrent.futures.as_completed(future_to_proxy):
+                p = future_to_proxy[future]
                 try:
-                    result = fut.result()
-                    all_proxies.extend(result)
-                    self.logger.info(f"Fetched {len(result)} from {name}")
-                except Exception as e:
-                    self.logger.error(f"Error from {name}: {str(e)}")
-        seen = set()
-        unique = []
-        for p in all_proxies:
-            s = p['http']
-            if s not in seen:
-                seen.add(s)
-                unique.append(p)
-        self.proxies = unique
-        self.logger.info(f"Total unique proxies: {len(self.proxies)}")
+                    if future.result():
+                        valid.append(p)
+                        msg = f"Validated: {p['http']}"
+                        self.logger.info(msg)
+                        if progress_callback:
+                            progress_callback(msg)
+                        if len(valid) >= max_proxies:
+                            break
+                except Exception:
+                    continue
+        self.proxies = valid
+        msg = f"Validation complete. {len(valid)} proxies are usable."
+        self.logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
     
     def get_proxy(self):
         if not self.proxy_enabled or not self.proxies:
@@ -385,7 +427,6 @@ class OptionsAnalyzer:
                 td = ticker.history(period='1d')
                 if td.empty:
                     raise ValueError("No price data for 1d.")
-                # Use 'Close' if available, else fallback to 'Adj Close'
                 if 'Close' in td.columns:
                     return td['Close'].iloc[-1]
                 elif 'Adj Close' in td.columns:
@@ -745,7 +786,6 @@ class EnhancedEarningsScanner:
         ds = date.strftime('%Y-%m-%d')
         self.logger.info(f"Scan earnings for {ds}")
         e_stocks = self.calendar_fetcher.fetch_earnings_data(ds)
-        # OTC filtering: load OTC tickers from file and remove them.
         try:
             with open("otc-tickers.txt", "r") as f:
                 otc_tickers = {line.strip().upper() for line in f if line.strip()}
@@ -819,11 +859,6 @@ class EnhancedEarningsScanner:
         return recommended
     
     def analyze_stock(self, ticker: str, history_data: Optional[pd.DataFrame] = None, skip_otc_check: bool = False) -> Optional[Dict]:
-        """
-        Analyze a single stock.
-        For earnings scanning, the default behavior is to skip OTC stocks.
-        For single stock analysis (when called with skip_otc_check=True), the OTC check is bypassed.
-        """
         try:
             st2 = self.analyzer.get_ticker(ticker)
             if not skip_otc_check:
@@ -839,7 +874,6 @@ class EnhancedEarningsScanner:
                 else:
                     self.logger.warning(f"No data for {ticker}; skipping.")
                     return None
-            # Use 'Close' if available; otherwise fallback to 'Adj Close'
             if 'Close' in history_data.columns:
                 cp = history_data['Close'].iloc[-1]
             elif 'Adj Close' in history_data.columns:
@@ -921,6 +955,8 @@ class EarningsTkApp:
         self.root = root
         self.root.title("Earnings Volatility Calculator (Tkinter)")
         self.proxy_manager = ProxyManager()
+        # Enable proxy support; proxies will be updated only when button is pressed.
+        self.proxy_manager.proxy_enabled = True
         self.analyzer = OptionsAnalyzer(self.proxy_manager)
         self.scanner = EnhancedEarningsScanner(self.analyzer)
         self.raw_results: List[Dict] = []
@@ -933,7 +969,7 @@ class EarningsTkApp:
         # ---------- Proxy Settings -----------
         proxy_frame = ttk.LabelFrame(self.root, text="Proxy Settings", padding=2)
         proxy_frame.pack(side="top", fill="x", padx=5, pady=(2, 0))
-        self.proxy_var = tk.BooleanVar(value=False)
+        self.proxy_var = tk.BooleanVar(value=self.proxy_manager.proxy_enabled)
         cb = ttk.Checkbutton(proxy_frame, text="Enable Proxy",
                              variable=self.proxy_var,
                              command=self.on_toggle_proxy)
@@ -941,7 +977,7 @@ class EarningsTkApp:
         btn_proxy_update = ttk.Button(proxy_frame, text="Update Proxies",
                                       command=self.on_update_proxies)
         btn_proxy_update.pack(side="left", padx=5, pady=0)
-        self.lbl_proxy_status = ttk.Label(proxy_frame, text="Disabled (0 proxies)")
+        self.lbl_proxy_status = ttk.Label(proxy_frame, text=f"Enabled ({len(self.proxy_manager.proxies)} proxies)")
         self.lbl_proxy_status.pack(side="left", padx=5, pady=0)
         
         # ---------- Single Stock Analysis -----------
@@ -1026,12 +1062,32 @@ class EarningsTkApp:
         self.update_proxy_status()
     
     def on_update_proxies(self):
-        try:
-            self.proxy_manager.fetch_proxies()
-            self.update_proxy_status()
-            self.set_status("Proxies updated.")
-        except Exception as e:
-            self.set_status(f"Failed to update proxies: {e}")
+        # Create a Toplevel window with a progress bar for proxy update feedback.
+        loading_win = tk.Toplevel(self.root)
+        loading_win.title("Updating Proxies")
+        loading_win.geometry("300x120")
+        ttk.Label(loading_win, text="Fetching and validating proxies...").pack(pady=10)
+        pb = ttk.Progressbar(loading_win, mode='indeterminate')
+        pb.pack(pady=10, padx=20, fill='x')
+        pb.start(10)
+        
+        # Define a progress callback that prints to console and updates the status label.
+        def progress_callback(msg):
+            print(msg)
+            self.root.after(0, lambda: self.set_status(msg))
+        
+        def update_task():
+            try:
+                self.proxy_manager.build_valid_proxy_pool(max_proxies=50, concurrency=20, progress_callback=progress_callback)
+                self.root.after(0, lambda: self.update_proxy_status())
+                self.root.after(0, lambda: self.set_status("Proxies updated."))
+            except Exception as e:
+                self.root.after(0, lambda: self.set_status(f"Failed to update proxies: {e}"))
+            finally:
+                self.root.after(0, lambda: pb.stop())
+                self.root.after(0, lambda: loading_win.destroy())
+        
+        threading.Thread(target=update_task, daemon=True).start()
     
     def update_proxy_status(self):
         if self.proxy_manager.proxy_enabled:
@@ -1051,7 +1107,6 @@ class EarningsTkApp:
         self.raw_results.clear()
         def worker():
             hist_map = self.scanner.batch_download_history([ticker])
-            # For single stock analysis, bypass OTC check.
             r = self.scanner.analyze_stock(ticker, hist_map.get(ticker), skip_otc_check=True)
             if r:
                 self.raw_results = [r]
