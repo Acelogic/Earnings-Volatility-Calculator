@@ -3,7 +3,7 @@ DISCLAIMER:
 
 This software is provided solely for educational and research purposes. 
 It is not intended to provide investment advice, and no investment recommendations are made herein. 
-The developers are not financial advisors and accept no responsibility for any financial decisions or losses resulting from the use of this software. 
+The developers are not financial advisors and accept no responsibility for any financial decisions or losses resulting from the use of this software.
 Always consult a professional financial advisor before making any investment decisions.
 """
 
@@ -400,6 +400,18 @@ class OptionsAnalyzer:
         except Exception as e:
             warnings.warn(f"Error in fallback volatility: {e}")
             return np.nan
+
+    def compute_atr(self, pdf: pd.DataFrame, window=14):
+        """
+        Computes the Average True Range (ATR) over the given window.
+        """
+        high = pdf['High']
+        low = pdf['Low']
+        close = pdf['Close']
+        prev_close = close.shift(1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(window=window, min_periods=window).mean()
+        return atr.iloc[-1] if not atr.empty else np.nan
     
     def build_term_structure(self, days: List[int], ivs: List[float]) -> callable:
         try:
@@ -447,7 +459,7 @@ class OptionsAnalyzer:
                 s = symbol.strip().upper()
                 if not s:
                     return {"error": "No symbol provided."}
-                t = self.get_ticker(s)
+                t = yf.Ticker(s)
                 if not t.options:
                     return {"error": f"No options for {s}."}
                 exps = list(t.options)
@@ -487,6 +499,9 @@ class OptionsAnalyzer:
                             midp = (pbid + pask)/2
                             stprice = midc + midp
                     i += 1
+                if atm_ivs:
+                    sorted_exps = sorted(atm_ivs.keys())
+                    fi_iv = atm_ivs[sorted_exps[0]]
                 if not atm_ivs:
                     return {"error": "No ATM IV found."}
                 today = datetime.today().date()
@@ -515,6 +530,13 @@ class OptionsAnalyzer:
                     exmo = f"{round(stprice/up*100,2)}%"
                 else:
                     exmo = "N/A"
+                # Compute ATR 14d using a 1mo history
+                hist_atr = t.history(period='1mo')
+                if hist_atr.empty:
+                    atr14 = 0
+                else:
+                    atr14 = self.compute_atr(hist_atr, window=14)
+                atr14_pct = (atr14/up) if up else 0
                 return {
                     'avg_volume': avgv >= 1_500_000,
                     'avg_volume_value': avgv,
@@ -524,7 +546,9 @@ class OptionsAnalyzer:
                     'expected_move': exmo,
                     'underlying_price': up,
                     'historical_volatility': hv,
-                    'current_iv': fi_iv
+                    'current_iv': fi_iv,
+                    'atr14': atr14,
+                    'atr14_pct': atr14_pct
                 }
             except Exception as e:
                 if attempt < 2:
