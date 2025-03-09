@@ -8,21 +8,24 @@ A Python-based tool that analyzes options data around earnings events, calculate
 
 ## Table of Contents
 
-1. [Overview](#overview)  
-2. [Core Features](#core-features)  
-3. [Motivation & Strategy Background](#motivation--strategy-background)  
-4. [Installation Instructions](#installation-instructions)  
-5. [Usage](#usage)  
-   - [Single Stock Analysis](#single-stock-analysis)  
-   - [Earnings Scan](#earnings-scan)  
-   - [Filtering Results](#filtering-results)  
-   - [Interactive Charts](#interactive-charts)  
-   - [Exporting Data](#exporting-data)  
-6. [Configuration & Customization](#configuration--customization)  
-7. [Troubleshooting & Common Issues](#troubleshooting--common-issues)  
-8. [Contributing](#contributing)  
-9. [License](#license)  
-10. [Additional Resources](#additional-resources)
+- [Earnings Volatility Calculator](#earnings-volatility-calculator)
+	- [Table of Contents](#table-of-contents)
+	- [Overview](#overview)
+	- [Core Features](#core-features)
+	- [Motivation \& Strategy Background](#motivation--strategy-background)
+	- [Installation Instructions](#installation-instructions)
+		- [Prerequisites](#prerequisites)
+		- [Steps](#steps)
+	- [Usage](#usage)
+		- [Single Stock Analysis](#single-stock-analysis)
+		- [Earnings Scan](#earnings-scan)
+		- [Interactive Charts](#interactive-charts)
+		- [Exporting Data](#exporting-data)
+	- [Configuration \& Customization](#configuration--customization)
+	- [Troubleshooting \& Common Issues](#troubleshooting--common-issues)
+	- [Contributing](#contributing)
+	- [License](#license)
+	- [Additional Resources](#additional-resources)
 
 ---
 
@@ -103,12 +106,12 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 3. **Clone or Download the Repository**  
    ```bash
    git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
-   cd Earnings-Volatility-Calculator
+   cd Earnings-Volatility-Calculator/src
    ```
 
 4. **Install Dependencies**  
    ```bash
-   pip install yfinance pandas numpy requests beautifulsoup4 matplotlib mplfinance scipy tkcalendar
+   pip install -r requirements.txt
    ```
 
 5. **Run the Application**  
