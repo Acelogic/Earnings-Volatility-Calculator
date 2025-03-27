@@ -536,7 +536,7 @@ class OptionsAnalyzer:
                     atr14 = 0
                 else:
                     atr14 = self.compute_atr(hist_atr, window=14)
-                atr14_pct = (atr14/up) if up else 0
+                atr14_pct = (atr14/up) * 100 if up else 0
                 return {
                     'avg_volume': avgv >= 1_500_000,
                     'avg_volume_value': avgv,
