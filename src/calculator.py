@@ -1044,6 +1044,13 @@ class EarningsTkApp:
                                 width=12)
         cbox_rec.pack(side="left", padx=5, pady=0)
         cbox_rec.bind("<<ComboboxSelected>>", self.on_filter_changed)
+        ttk.Label(filter_frame, text="Min Stock Price Filter:").pack(side="left", padx=(10,5), pady=0)
+        self.filter_price_var = tk.StringVar(value="All")
+        cbox_price = ttk.Combobox(filter_frame, textvariable=self.filter_price_var,
+                                values=["All","1.00","2.50","5.00","10.00"],
+                                width=12)
+        cbox_price.pack(side="left", padx=5, pady=0)
+        cbox_price.bind("<<ComboboxSelected>>", self.on_filter_changed)
         thresholds_text = ("Recommended If:\n- Avg. Daily Volume ≥ 1,500,000\n- IV30/RV30 ≥ 1.25\n- Term Slope ≤ -0.00406")
         thresholds_label = ttk.Label(filter_and_threshold_frame, text=thresholds_text, justify="left")
         thresholds_label.pack(side="right", padx=(10,5), pady=(0,0), anchor="n")
@@ -1164,6 +1171,7 @@ class EarningsTkApp:
     def apply_filters(self, data: List[Dict]) -> List[Dict]:
         time_val = self.filter_time_var.get()
         rec_val = self.filter_rec_var.get()
+        price_val = self.filter_price_var.get()
         filtered = []
         for row in data:
             et = row.get('earnings_time', "Unknown")
@@ -1171,6 +1179,9 @@ class EarningsTkApp:
                 continue
             rv = row.get('recommendation', "Avoid")
             if rec_val != "All" and rv != rec_val:
+                continue
+            pv = row.get('current_price', "All")
+            if price_val != "All" and pv < float(price_val):
                 continue
             filtered.append(row)
         return filtered
