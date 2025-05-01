@@ -24,6 +24,7 @@ import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import yfinance.shared as shared
 from bs4 import BeautifulSoup
 
 import tkinter as tk
@@ -776,36 +777,41 @@ class EnhancedEarningsScanner:
             self.logger.addHandler(fh)
         add_console_logging(self.logger, level=logging.INFO)
     
-    def batch_download_history(self, tickers: List[str]) -> Dict[str, pd.DataFrame]:
-        results = {}
-        if not tickers:
-            return results
-        try:
-            data = yf.download(
-                tickers=tickers,
-                period="3mo",
-                auto_adjust=True,
-                prepost=True,
-                threads=True,
-                proxy=self.analyzer.session_manager.get_session().proxies
-            )
-            # Check if the returned DataFrame has a MultiIndex.
-            if isinstance(data.columns, pd.MultiIndex):
-                for tk in tickers:
-                    try:
-                        df = data.xs(tk, axis=1, level=0)
-                        if not df.empty:
-                            results[tk] = df
-                    except KeyError:
-                        self.logger.warning(f"No data returned for {tk}.")
-            else:
-                # Single ticker case – data is not multi-indexed.
-                if not data.empty:
-                    results[tickers[0]] = data
-            return results
-        except Exception as e:
-            self.logger.error(f"batch_download_history error: {e}")
-            return results
+    def batch_download_history(self, tickers: List[str])->Dict[str,pd.DataFrame]:
+      ticker_str= " ".join(tickers)
+      try:
+          for _ in range(3):
+              data = yf.download(
+                  tickers=ticker_str,
+                  period="3mo",
+                  group_by='ticker',
+                  auto_adjust=True,
+                  prepost=True,
+                  threads=True,
+                  proxy=self.analyzer.session_manager.get_session().proxies
+              )
+
+              if self.analyzer.session_manager.proxy_manager.proxy_enabled and len(shared._ERRORS) > 0:
+                  self.analyzer.session_manager.rotate_session()
+              else:
+                  break
+
+          res={}
+          if len(tickers)==1:
+              res[tickers[0]]= data
+          else:
+              for tk in tickers:
+                  try:
+                      df= data.xs(tk, axis=1, level=0)
+                      if not df.empty:
+                          res[tk]=df
+                  except:
+                      continue
+          return res
+      except Exception as e:
+          self.logger.error(f"batch download error: {e}")
+          return {}
+
     
     def scan_earnings_stocks(self, date: datetime, progress_callback=None) -> List[Dict]:
         ds = date.strftime('%Y-%m-%d')
