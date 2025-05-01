@@ -99,14 +99,27 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 
 1. **Install Python**  
    - [Download here](https://www.python.org/downloads/) and make sure to check **“Add Python to PATH”** during installation.
+   - macOS: ```brew install python@3.10 python-tk@3.10```
 
 2. **Open a Terminal / Command Prompt**  
    - On Windows, press `Win + R`, type `cmd`, and press Enter.
+   - On macOS, press `Command + space`, type `Terminal`, and press Enter.
 
 3. **Clone or Download the Repository**  
    ```bash
    git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
    cd Earnings-Volatility-Calculator/src
+   ```
+   - Using python virtual environment:
+   - Windows
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   ```
+   - macOS
+   ```bash
+   python3.10 -m venv venv
+   source venv/bin/activate
    ```
 
 4. **Install Dependencies**  
