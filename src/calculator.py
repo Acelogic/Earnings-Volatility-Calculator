@@ -907,6 +907,9 @@ class EnhancedEarningsScanner:
                     self.logger.warning(f"No data for {ticker}; skipping.")
                     return None
                 history_data = hd
+
+            if isinstance(history_data.columns, pd.MultiIndex):
+                history_data.columns = history_data.columns.get_level_values(1)
             if 'Close' in history_data.columns:
                 cp = history_data['Close'].iloc[-1]
             elif 'Adj Close' in history_data.columns:
