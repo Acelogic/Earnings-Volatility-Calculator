@@ -10,4 +10,4 @@ requests_cache==1.2.1
 scipy==1.15.2
 tkcalendar==1.6.1
 yahooquery==2.3.7
-yfinance==0.2.54
+yfinance==0.2.66
