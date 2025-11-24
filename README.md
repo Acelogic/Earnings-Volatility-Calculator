@@ -9,23 +9,23 @@ A Python-based tool that analyzes options data around earnings events, calculate
 ## Table of Contents
 
 - [Earnings Volatility Calculator](#earnings-volatility-calculator)
-	- [Table of Contents](#table-of-contents)
-	- [Overview](#overview)
-	- [Core Features](#core-features)
-	- [Motivation \& Strategy Background](#motivation--strategy-background)
-	- [Installation Instructions](#installation-instructions)
-		- [Prerequisites](#prerequisites)
-		- [Steps](#steps)
-	- [Usage](#usage)
-		- [Single Stock Analysis](#single-stock-analysis)
-		- [Earnings Scan](#earnings-scan)
-		- [Interactive Charts](#interactive-charts)
-		- [Exporting Data](#exporting-data)
-	- [Configuration \& Customization](#configuration--customization)
-	- [Troubleshooting \& Common Issues](#troubleshooting--common-issues)
-	- [Contributing](#contributing)
-	- [License](#license)
-	- [Additional Resources](#additional-resources)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Core Features](#core-features)
+  - [Motivation \& Strategy Background](#motivation--strategy-background)
+  - [Installation Instructions](#installation-instructions)
+    - [Prerequisites](#prerequisites)
+    - [Steps](#steps)
+  - [Usage](#usage)
+    - [Single Stock Analysis](#single-stock-analysis)
+    - [Earnings Scan](#earnings-scan)
+    - [Interactive Charts](#interactive-charts)
+    - [Exporting Data](#exporting-data)
+  - [Configuration \& Customization](#configuration--customization)
+  - [Troubleshooting \& Common Issues](#troubleshooting--common-issues)
+  - [Contributing](#contributing)
+  - [License](#license)
+  - [Additional Resources](#additional-resources)
 
 ---
 
@@ -108,7 +108,7 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 3. **Clone or Download the Repository**  
    ```bash
    git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
-   cd Earnings-Volatility-Calculator/src
+   cd Earnings-Volatility-Calculator
    ```
    - Using python virtual environment:
    - Windows
@@ -129,7 +129,7 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 
 5. **Run the Application**  
    ```bash
-   python calculator.py
+   python src/calculator.py
    ```
    The Tkinter UI should open.
 
@@ -139,7 +139,7 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 
 ### Single Stock Analysis
 
-1. Launch the GUI (`python calculator.py`).  
+1. Launch the GUI (`python src/calculator.py`).  
 2. In the **“Enter Stock Symbol”** field (top panel), type the stock ticker (e.g. `AAPL`).  
 3. Click **“Analyze”**.  
 
