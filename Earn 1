@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>User Earnings Check</title>
+<style>
+body { font-family: Arial; padding:20px; max-width:350px; margin:auto; }
+input, button { width:100%; padding:10px; margin-top:15px; }
+#result { margin-top:20px; padding:15px; background:#f0f0f0; border-radius:6px; display:none; }
+</style>
+</head>
+<body>
+
+<h2>Check Your Earnings</h2>
+<p>Enter your User ID:</p>
+
+<input id="uid" placeholder="Enter your ID">
+
+<button onclick="check()">Check Earnings</button>
+
+<div id="result"></div>
+
+<script>
+async function check() {
+    const id = uid.value.trim();
+    if (!id) return alert("Enter ID");
+
+    const data = await fetch("./data.json").then(r => r.json());
+
+    if (!data[id]) {
+        result.style.display = "block";
+        result.innerHTML = "<b>No earnings found.</b>";
+        return;
+    }
+
+    result.style.display = "block";
+    result.innerHTML = `
+        <b>User ID:</b> ${id}<br>
+        <b>Total Earnings:</b> ₹${data[id].earnings}<br>
+        <b>Tasks Done:</b> ${data[id].tasks}
+    `;
+}
+</script>
+
+</body>
+</html>
