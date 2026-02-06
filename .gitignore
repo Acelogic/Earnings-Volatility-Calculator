@@ -1,5 +1,6 @@
 stock_cache/
 otc-tickers.txt
+*_debug.log
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,pycharm,visualstudiocode,linux,macos,windows
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,pycharm,visualstudiocode,linux,macos,windows

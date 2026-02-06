@@ -88,48 +88,71 @@ For a deep-dive into the underlying concepts, see the [video transcript](#) in t
 
 ### Prerequisites
 
-- **Operating System**:  
-  - Windows 10 or higher (also works on macOS / Linux with minor adjustments)  
-- **Python**:  
-  - Version 3.7+; 3.10+ recommended  
-- **Internet Connection**:  
-  - Required for fetching stock market data from Yahoo Finance and Investing.com  
+- **Operating System**:
+  - Windows 10 or higher (also works on macOS / Linux with minor adjustments)
+- **Python**:
+  - Version 3.10+ required
+- **uv** (recommended):
+  - Fast Python package manager. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+- **Internet Connection**:
+  - Required for fetching stock market data from Yahoo Finance and Investing.com
 
-### Steps
+### Steps (with uv - recommended)
 
-1. **Install Python**  
-   - [Download here](https://www.python.org/downloads/) and make sure to check **“Add Python to PATH”** during installation.
-   - macOS: ```brew install python@3.10 python-tk@3.10```
+1. **Install uv**
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
 
-2. **Open a Terminal / Command Prompt**  
-   - On Windows, press `Win + R`, type `cmd`, and press Enter.
-   - On macOS, press `Command + space`, type `Terminal`, and press Enter.
-
-3. **Clone or Download the Repository**  
+2. **Clone the Repository**
    ```bash
    git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
    cd Earnings-Volatility-Calculator
    ```
-   - Using python virtual environment:
-   - Windows
+
+3. **Install Dependencies**
    ```bash
-   python -m venv venv
-   source venv/bin/activate
+   uv sync
    ```
-   - macOS
+   This creates a `.venv/`, installs all dependencies from `uv.lock`, and installs the project as a package.
+
+4. **Run the Application**
    ```bash
-   python3.10 -m venv venv
-   source venv/bin/activate
+   uv run earnings-calculator
+   ```
+   Or alternatively:
+   ```bash
+   uv run python -m earnings_calculator
+   ```
+   The Tkinter UI should open.
+
+5. **Run Tests**
+   ```bash
+   uv run pytest tests/ -v
    ```
 
-4. **Install Dependencies**  
+### Steps (with pip - alternative)
+
+1. **Install Python 3.10+**
+   - [Download here](https://www.python.org/downloads/) and make sure to check **"Add Python to PATH"** during installation.
+   - macOS: `brew install python@3.10 python-tk@3.10`
+
+2. **Clone the Repository and Create a Virtual Environment**
    ```bash
-   pip install -r requirements.txt
+   git clone https://github.com/Acelogic/Earnings-Volatility-Calculator.git
+   cd Earnings-Volatility-Calculator
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-5. **Run the Application**  
+3. **Install Dependencies**
    ```bash
-   python src/calculator.py
+   pip install -e .
+   ```
+
+4. **Run the Application**
+   ```bash
+   earnings-calculator
    ```
    The Tkinter UI should open.
 
