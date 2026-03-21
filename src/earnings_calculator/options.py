@@ -49,17 +49,20 @@ class OptionsAnalyzer:
         today = datetime.today().date()
         cutoff = today + timedelta(days=FILTER_MAX_DTE)
         sdates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
+        # Filter out today's date (0-DTE) before processing
+        filtered = [d for d in sdates if d > today]
+        if not filtered:
+            # Fall back to original unfiltered list if filtering removes all dates
+            filtered = sdates
         arr = []
-        for i, d in enumerate(sdates):
+        for i, d in enumerate(filtered):
             if d >= cutoff:
-                arr = [x.strftime("%Y-%m-%d") for x in sdates[: i + 1]]
+                arr = [x.strftime("%Y-%m-%d") for x in filtered[: i + 1]]
                 break
         if arr:
-            if arr[0] == today.strftime("%Y-%m-%d") and len(arr) > 1:
-                arr = arr[1:]
             return arr
         else:
-            return [x.strftime("%Y-%m-%d") for x in sdates]
+            return [x.strftime("%Y-%m-%d") for x in filtered]
 
     def yang_zhang_volatility(
         self,
@@ -192,12 +195,13 @@ class OptionsAnalyzer:
                         self.session_manager.rotate_session()
                         t.session = self.session_manager.get_yf_session()
                         oc[e] = t.option_chain(e)
-                up = self.get_current_price(t)
                 # Use passed-in history or fetch once for all derived metrics
                 if history_data is not None and not history_data.empty:
                     h3 = history_data
                 else:
                     h3 = t.history(period="3mo")
+                # Extract current price from history to avoid a redundant API call
+                up = h3["Close"].iloc[-1]
                 tv = h3["Volume"].iloc[-1] if not h3.empty else 0
                 atm_ivs = {}
                 stprice = None

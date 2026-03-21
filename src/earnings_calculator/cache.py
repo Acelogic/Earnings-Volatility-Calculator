@@ -3,6 +3,7 @@
 import os
 import pickle
 import hashlib
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -13,6 +14,7 @@ class DataCache:
     def __init__(self, cache_dir="stock_cache"):
         self.cache_dir = cache_dir
         self.cache_expiry_days = 7
+        self._lock = threading.Lock()
         self._ensure_cache_dir()
         self.logger = create_logger("DataCache", "cache_debug.log")
 
@@ -90,20 +92,21 @@ class DataCache:
     def update_missing_data(self, date: str, tickers: List[str], new_data: Dict):
         ck = self._get_cache_key(date, tickers)
         cp = self._get_cache_path(ck)
-        try:
-            with open(cp, "rb") as f:
-                c = pickle.load(f)
-            for entry in c["data"]:
-                if entry["ticker"] == new_data["ticker"]:
-                    for k, v in new_data.items():
-                        if (k in entry) and (entry[k] in [None, "N/A", 0]):
-                            entry[k] = v
-            c["missing_data"] = self._identify_missing_data(c["data"])
-            with open(cp, "wb") as f:
-                pickle.dump(c, f)
-            self.logger.info(f"Updated cache for {new_data['ticker']}")
-        except Exception as e:
-            self.logger.error(f"Error updating cache: {e}")
+        with self._lock:
+            try:
+                with open(cp, "rb") as f:
+                    c = pickle.load(f)
+                for entry in c["data"]:
+                    if entry["ticker"] == new_data["ticker"]:
+                        for k, v in new_data.items():
+                            if (k in entry) and (entry[k] in [None, "N/A", 0]):
+                                entry[k] = v
+                c["missing_data"] = self._identify_missing_data(c["data"])
+                with open(cp, "wb") as f:
+                    pickle.dump(c, f)
+                self.logger.info(f"Updated cache for {new_data['ticker']}")
+            except Exception as e:
+                self.logger.error(f"Error updating cache: {e}")
 
     def clear_expired(self):
         for fn in os.listdir(self.cache_dir):
