@@ -155,6 +155,28 @@ class TestFilterDates:
         result = analyzer.filter_dates(dates)
         assert today.strftime("%Y-%m-%d") not in result
 
+    def test_excludes_today_all_short_term(self):
+        """0-DTE should be excluded even when all dates are under 45 DTE."""
+        analyzer = OptionsAnalyzer()
+        today = datetime.today().date()
+        dates = [
+            today.strftime("%Y-%m-%d"),
+            (today + timedelta(days=7)).strftime("%Y-%m-%d"),
+            (today + timedelta(days=14)).strftime("%Y-%m-%d"),
+        ]
+        result = analyzer.filter_dates(dates)
+        assert today.strftime("%Y-%m-%d") not in result
+        assert len(result) == 2
+
+    def test_filter_dates_only_today_falls_back(self):
+        """If today is the only date, fall back to include it."""
+        analyzer = OptionsAnalyzer()
+        today = datetime.today().date()
+        dates = [today.strftime("%Y-%m-%d")]
+        result = analyzer.filter_dates(dates)
+        # Fallback: return the original list since filtering removes all
+        assert len(result) == 1
+
 
 class TestGetCurrentPrice:
     def test_success(self):

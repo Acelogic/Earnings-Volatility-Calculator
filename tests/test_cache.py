@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import threading
 from datetime import datetime, timedelta
 
 import pytest
@@ -212,3 +213,60 @@ class TestClearExpired:
         assert os.path.exists(cp)
         cache.clear_expired()
         assert not os.path.exists(cp)
+
+
+class TestConcurrentUpdateMissingData:
+    def test_concurrent_updates_all_persist(self, tmp_path):
+        """Multiple threads updating different tickers should all persist."""
+        cache = DataCache(cache_dir=str(tmp_path / "cache"))
+        tickers = ["AAPL", "MSFT", "GOOG"]
+        data = [
+            {
+                "ticker": "AAPL",
+                "expected_move": "N/A",
+                "current_iv": None,
+                "term_structure": 0,
+            },
+            {
+                "ticker": "MSFT",
+                "expected_move": "N/A",
+                "current_iv": None,
+                "term_structure": 0,
+            },
+            {
+                "ticker": "GOOG",
+                "expected_move": "N/A",
+                "current_iv": None,
+                "term_structure": 0,
+            },
+        ]
+        cache.save_data("2025-01-15", tickers, data)
+
+        updates = [
+            {"ticker": "AAPL", "expected_move": "3.5%", "current_iv": 0.42, "term_structure": 0.40},
+            {"ticker": "MSFT", "expected_move": "2.1%", "current_iv": 0.30, "term_structure": 0.35},
+            {"ticker": "GOOG", "expected_move": "4.0%", "current_iv": 0.50, "term_structure": 0.45},
+        ]
+
+        errors = []
+
+        def update_ticker(update):
+            try:
+                cache.update_missing_data("2025-01-15", tickers, update)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=update_ticker, args=(u,)) for u in updates]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+
+        result, missing = cache.get_data("2025-01-15", tickers)
+        assert result is not None
+        for entry in result:
+            assert entry["expected_move"] != "N/A", f"{entry['ticker']} expected_move not updated"
+            assert entry["current_iv"] is not None, f"{entry['ticker']} current_iv not updated"
+            assert entry["term_structure"] != 0, f"{entry['ticker']} term_structure not updated"
